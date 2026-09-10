@@ -8,6 +8,16 @@ export const POST_FAKE_PASSWORD_FORGET = "/auth/forgot-password";
 export const POST_FAKE_JWT_PASSWORD_FORGET = "/jwt-forget-pwd";
 export const SOCIAL_LOGIN = "/social-login";
 
+// SoftOnCloud Auth / Authorization APIs
+export const POST_AUTH_LOGIN = "/api/auth/login";
+export const GET_AUTH_RESOLVE_CONTEXT = "/api/auth/resolve-context";
+export const GET_AUTH_PRODUCT_CONNECTION = "/api/auth/product-connection";
+export const GET_AUTH_COUNTRIES = "/api/auth/countries";
+export const POST_AUTH_FORGOT_PASSWORD = "/api/auth/forgot-password";
+export const POST_AUTH_VERIFY_PASSWORD_RESET_OTP = "/api/auth/verify-password-reset-otp";
+export const POST_AUTH_RESEND_PASSWORD_RESET_OTP = "/api/auth/resend-password-reset-otp";
+export const POST_AUTH_RESET_PASSWORD = "/api/auth/reset-password";
+
 //PROFILE
 export const POST_EDIT_JWT_PROFILE = "/post-jwt-profile";
 export const POST_EDIT_PROFILE = "/user";
