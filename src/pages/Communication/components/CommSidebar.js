@@ -21,7 +21,7 @@ const CommSidebar = ({ activeMenu }) => {
       </div>
 
       <nav className="comm-nav">
-        {navItems.filter((n) => !["search", "starred", "archive", "management"].includes(n.id) || ["search", "starred", "archive"].includes(n.id)).slice(0, 10).map((item) => (
+        {navItems.filter((n) => !["search", "archive", "management"].includes(n.id) || ["search", "archive"].includes(n.id)).slice(0, 10).map((item) => (
           <Link
             key={item.id}
             to={item.path}
@@ -54,7 +54,7 @@ const CommSidebar = ({ activeMenu }) => {
 
       <div className="comm-quick-actions">
         <h6>Quick Actions</h6>
-        <Link to="/communication/compose" className="btn btn-new-msg">
+        <Link to="/communication/messages" className="btn btn-new-msg">
           <i className="ri-add-line me-1"></i> New Message
         </Link>
         <Link to="/communication/groups" className="btn btn-outline-comm">

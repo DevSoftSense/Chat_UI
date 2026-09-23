@@ -1,4 +1,4 @@
-export const buildCommunicationMenu = () => {
+export const buildCommunicationMenu = (options = {}) => {
   const section = (label) => ({ isHeader: true, label });
   const link = (id, label, icon, route, badge) => ({
     id,
@@ -8,17 +8,43 @@ export const buildCommunicationMenu = () => {
     ...(badge || {}),
   });
 
+  const messagesTotal = Math.max(0, Number(options.messagesUnread) || 0);
+  const messagesBadge =
+    messagesTotal > 0
+      ? {
+          badge: true,
+          badgeColor: "danger",
+          badgeName: messagesTotal > 99 ? "99+" : String(messagesTotal),
+        }
+      : {};
+
+  const groupsTotal = Math.max(0, Number(options.groupsUnread) || 0);
+  const groupsBadge =
+    groupsTotal > 0
+      ? {
+          badge: true,
+          badgeColor: "danger",
+          badgeName: groupsTotal > 99 ? "99+" : String(groupsTotal),
+        }
+      : {};
+
   return [
     section("Chat"),
     link("comm-dashboard", "Dashboard", "ri-dashboard-2-line", "/communication/dashboard"),
-    link("comm-inbox", "Inbox", "ri-inbox-line", "/communication/inbox", {
-      badge: true,
-      badgeColor: "danger",
-      badgeName: "24",
-    }),
-    link("comm-compose", "Compose", "ri-edit-box-line", "/communication/compose"),
-    link("comm-sent", "Sent Items", "ri-send-plane-line", "/communication/sent"),
-    link("comm-groups", "Groups", "ri-group-line", "/communication/groups"),
+    link(
+      "comm-inbox",
+      "Messages",
+      "ri-message-3-line",
+      "/communication/messages",
+      messagesBadge
+    ),
+    link(
+      "comm-groups",
+      "Groups",
+      "ri-group-line",
+      "/communication/groups",
+      groupsBadge
+    ),
     link("comm-announcements", "Announcements", "ri-megaphone-line", "/communication/announcements"),
     link("comm-management", "Management Dashboard", "ri-bar-chart-box-line", "/communication/management"),
     link("comm-settings", "Settings", "ri-settings-3-line", "/communication/settings"),

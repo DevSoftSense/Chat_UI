@@ -10,6 +10,9 @@ import {
   getConfiguredProductId,
   storeAuthSession,
   clearAuthSession,
+  tryReactivateIncludedPlan,
+  isSubscriptionExpiredError,
+  allowExpiredSubscriptionLogin,
 } from "../../../helpers/softoncloud_auth_helper";
 
 import {
@@ -88,7 +91,9 @@ export const loginUser = (user, history) => async (dispatch) => {
     }
 
     // Store JWT + profile from login response
-    let session = storeAuthSession(loginResponse, null);
+    let session = storeAuthSession(loginResponse, null, null, {
+      organizationId: String(user.organizationId || "").trim(),
+    });
 
     const productId = getConfiguredProductId();
     if (!productId) {
@@ -100,39 +105,133 @@ export const loginUser = (user, history) => async (dispatch) => {
     }
 
     // Authorization — ResolveUserContext
+    // If SoftOnCloud reports subscription_expired, renew via free/default plan
+    // Payment API (no local DB changes), then retry resolve-context once.
     let productContext;
+    let subscriptionBypassed = false;
     try {
       productContext = await resolveUserContext(productId);
     } catch (resolveError) {
-      clearAuthSession();
-      const status = resolveError?.status;
-      if (status === 401) {
-        dispatch(apiError({
-          data: getErrorMessage(resolveError) || "Session expired. Please sign in again.",
-        }));
-      } else if (status === 403) {
-        dispatch(apiError({
-          data: getErrorMessage(resolveError) || "You do not have access to this product.",
-        }));
+      if (isSubscriptionExpiredError(resolveError)) {
+        try {
+          await tryReactivateIncludedPlan(productId);
+          productContext = await resolveUserContext(productId);
+        } catch (renewError) {
+          if (allowExpiredSubscriptionLogin()) {
+            // Local/dev: SoftOnCloud plan renew failed — continue so Chat still works.
+            console.warn(
+              "SoftOnCloud subscription renew failed; continuing because REACT_APP_ALLOW_EXPIRED_SUBSCRIPTION=true",
+              renewError
+            );
+            productContext = {
+              ...(resolveError?.data && typeof resolveError.data === "object"
+                ? resolveError.data
+                : {}),
+              accessGranted: true,
+              hasAccess: true,
+              productId,
+              subscriptionBypassed: true,
+            };
+            subscriptionBypassed = true;
+          } else {
+            clearAuthSession();
+            dispatch(apiError({
+              data:
+                getErrorMessage(renewError) ||
+                getErrorMessage(resolveError) ||
+                "Your subscription for this product has expired.",
+            }));
+            return;
+          }
+        }
       } else {
-        dispatch(apiError({ data: getErrorMessage(resolveError) }));
+        clearAuthSession();
+        const status = resolveError?.status;
+        if (status === 401) {
+          dispatch(apiError({
+            data: getErrorMessage(resolveError) || "Session expired. Please sign in again.",
+          }));
+        } else if (status === 403) {
+          dispatch(apiError({
+            data: getErrorMessage(resolveError) || "You do not have access to this product.",
+          }));
+        } else {
+          dispatch(apiError({ data: getErrorMessage(resolveError) }));
+        }
+        return;
       }
-      return;
     }
 
-    const accessGranted =
+    let accessGranted =
       productContext?.accessGranted === true ||
       productContext?.hasAccess === true ||
-      productContext?.has_access === true;
+      productContext?.has_access === true ||
+      subscriptionBypassed;
+
+    if (
+      productContext &&
+      accessGranted === false &&
+      isSubscriptionExpiredError({
+        denialReason: productContext?.denialReason,
+        message: productContext?.message,
+      })
+    ) {
+      try {
+        await tryReactivateIncludedPlan(productId);
+        productContext = await resolveUserContext(productId);
+        accessGranted =
+          productContext?.accessGranted === true ||
+          productContext?.hasAccess === true ||
+          productContext?.has_access === true;
+      } catch (renewError) {
+        if (allowExpiredSubscriptionLogin()) {
+          console.warn(
+            "SoftOnCloud subscription renew failed; continuing because REACT_APP_ALLOW_EXPIRED_SUBSCRIPTION=true",
+            renewError
+          );
+          accessGranted = true;
+          subscriptionBypassed = true;
+          productContext = {
+            ...productContext,
+            accessGranted: true,
+            hasAccess: true,
+            subscriptionBypassed: true,
+          };
+        } else {
+          clearAuthSession();
+          dispatch(apiError({
+            data:
+              getErrorMessage(renewError) ||
+              "Your subscription for this product has expired.",
+          }));
+          return;
+        }
+      }
+    }
 
     if (productContext && accessGranted === false) {
-      clearAuthSession();
-      dispatch(apiError({
-        data: productContext?.denialReason
-          ? `Access denied (${productContext.denialReason})`
-          : "You do not have access to this product.",
-      }));
-      return;
+      if (allowExpiredSubscriptionLogin()) {
+        console.warn(
+          "SoftOnCloud accessDenied; continuing because REACT_APP_ALLOW_EXPIRED_SUBSCRIPTION=true",
+          productContext?.denialReason || productContext?.message
+        );
+        accessGranted = true;
+        subscriptionBypassed = true;
+        productContext = {
+          ...productContext,
+          accessGranted: true,
+          hasAccess: true,
+          subscriptionBypassed: true,
+        };
+      } else {
+        clearAuthSession();
+        dispatch(apiError({
+          data: productContext?.denialReason
+            ? `Access denied (${productContext.denialReason})`
+            : "You do not have access to this product.",
+        }));
+        return;
+      }
     }
 
     // Product Connection (Transaction DB) — existing SoftOnCloud API
@@ -170,7 +269,9 @@ export const loginUser = (user, history) => async (dispatch) => {
       return;
     }
 
-    session = storeAuthSession(loginResponse, productContext, productConnection);
+    session = storeAuthSession(loginResponse, productContext, productConnection, {
+      organizationId: String(user.organizationId || "").trim(),
+    });
     dispatch(loginSuccess(session));
     history("/communication/dashboard");
   } catch (error) {

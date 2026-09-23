@@ -251,9 +251,7 @@ import PageBlogOverview from "../pages/Pages/Blogs/Overview";
 
 // Communication Module (SoftOnCloud)
 import CommDashboard from "../pages/Communication/Dashboard";
-import CommInbox from "../pages/Communication/Inbox";
-import CommCompose from "../pages/Communication/Compose";
-import CommSentItems from "../pages/Communication/SentItems";
+import CommMessages from "../pages/Communication/Messages";
 import CommGroups from "../pages/Communication/Groups";
 import CommAnnouncements from "../pages/Communication/Announcements";
 import CommSettings from "../pages/Communication/Settings";
@@ -481,9 +479,8 @@ const authProtectedRoutes = [
 
 const communicationRoutes = [
   { path: "/communication/dashboard", component: <CommDashboard /> },
-  { path: "/communication/inbox", component: <CommInbox /> },
-  { path: "/communication/compose", component: <CommCompose /> },
-  { path: "/communication/sent", component: <CommSentItems /> },
+  { path: "/communication/messages", component: <CommMessages /> },
+  { path: "/communication/inbox", component: <Navigate to="/communication/messages" /> },
   { path: "/communication/groups", component: <CommGroups /> },
   { path: "/communication/announcements", component: <CommAnnouncements /> },
   { path: "/communication/settings", component: <CommSettings /> },

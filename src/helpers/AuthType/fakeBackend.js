@@ -301,14 +301,15 @@ const fakeBackend = () => {
     });
   });
 
-  mock.onGet(new RegExp(`${url.GET_MESSAGES}/*`)).reply(config => {
+  // Legacy template only: /messages/{roomId}
+  // Do NOT match Chat_Api paths like /api/chat/{chatId}/messages
+  mock.onGet(new RegExp(`${url.GET_MESSAGES}/[^/?]+`)).reply(config => {
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         if (messages) {
-          // Passing fake JSON data as response
           const { params } = config;
-          const filteredMessages = messages.filter(
-            msg => msg.roomId === params.roomId
+          const filteredMessages = (messages || []).filter(
+            (msg) => msg && String(msg.roomId) === String(params?.roomId)
           );
 
           resolve([200, filteredMessages]);

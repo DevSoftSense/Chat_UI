@@ -20,7 +20,7 @@ if (token) {
 
 axios.interceptors.response.use(
   function (response) {
-    return response.data ? response.data : response;
+    return response.data !== undefined ? response.data : response;
   },
   function (error) {
     const status = error?.response?.status;

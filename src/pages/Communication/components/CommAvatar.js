@@ -8,7 +8,7 @@ import avatar6 from "../../../assets/images/users/avatar-6.jpg";
 import avatar7 from "../../../assets/images/users/avatar-7.jpg";
 import avatar8 from "../../../assets/images/users/avatar-8.jpg";
 
-const avatarMap = {
+export const avatarMap = {
   1: avatar2,
   2: avatar3,
   3: avatar4,
@@ -18,6 +18,9 @@ const avatarMap = {
   7: avatar8,
   default: avatar1,
 };
+
+export const getCommAvatarSrc = (id, src) =>
+  src || avatarMap[id] || avatarMap.default;
 
 const CommAvatar = ({ id, src, size = "xs", className = "" }) => {
   const img = src || avatarMap[id] || avatarMap.default;

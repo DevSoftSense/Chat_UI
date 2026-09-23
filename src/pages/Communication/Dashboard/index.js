@@ -95,8 +95,8 @@ const Dashboard = () => {
                     <i className="ri-calendar-2-line"></i>
                   </div>
                 </div>
-                <Link to="/communication/compose" className="btn btn-primary">
-                  <i className="ri-send-plane-line align-middle me-1"></i> Compose Message
+                <Link to="/communication/messages" className="btn btn-primary">
+                  <i className="ri-message-3-line align-middle me-1"></i> Open Messages
                 </Link>
               </div>
             </div>
@@ -179,9 +179,6 @@ const Dashboard = () => {
             <Card>
               <CardHeader className="align-items-center d-flex">
                 <h4 className="card-title mb-0 flex-grow-1">Recent Sent Messages</h4>
-                <Link to="/communication/sent" className="btn btn-soft-primary btn-sm">
-                  View All
-                </Link>
               </CardHeader>
               <CardBody>
                 <div className="vstack gap-3">

@@ -13,6 +13,7 @@
     "@fullcalendar/multimonth": "^6.1.15",
     "@fullcalendar/react": "^6.1.15",
     "@hello-pangea/dnd": "^17.0.0",
+    "@microsoft/signalr": "^8.0.7",
     "@react-google-maps/api": "^2.20.3",
     "@reduxjs/toolkit": "^2.3.0",
     "@simonwep/pickr": "^1.9.1",

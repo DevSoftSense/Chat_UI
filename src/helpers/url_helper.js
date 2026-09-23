@@ -13,12 +13,20 @@ export const POST_AUTH_LOGIN = "/api/auth/login";
 export const GET_AUTH_RESOLVE_CONTEXT = "/api/auth/resolve-context";
 export const GET_AUTH_PRODUCT_CONNECTION = "/api/auth/product-connection";
 export const GET_AUTH_COUNTRIES = "/api/auth/countries";
+export const GET_ORGANISATION_PRODUCT_USERS = "/api/organisations";
 export const POST_AUTH_FORGOT_PASSWORD = "/api/auth/forgot-password";
 export const POST_AUTH_VERIFY_PASSWORD_RESET_OTP = "/api/auth/verify-password-reset-otp";
 export const POST_AUTH_RESEND_PASSWORD_RESET_OTP = "/api/auth/resend-password-reset-otp";
 export const POST_AUTH_RESET_PASSWORD = "/api/auth/reset-password";
+export const GET_PRICING_PLANS = "/api/pricing/plans";
+export const POST_PAYMENT_INITIATE = "/api/payment/initiate";
 
-//PROFILE
+// SoftOnCloud Profile (authenticated user)
+export const GET_PROFILE = "/api/profile";
+export const UPDATE_PROFILE = "/api/profile";
+export const UPDATE_PROFILE_IMAGE = "/api/profile/image";
+
+//PROFILE (legacy template)
 export const POST_EDIT_JWT_PROFILE = "/post-jwt-profile";
 export const POST_EDIT_PROFILE = "/user";
 
@@ -30,12 +38,29 @@ export const ADD_NEW_EVENT = "/add/event";
 export const UPDATE_EVENT = "/update/event";
 export const DELETE_EVENT = "/delete/event";
 
-// Chat
+// Chat (legacy template / fake backend)
 export const GET_DIRECT_CONTACT = "/chat";
 export const GET_MESSAGES = "/messages";
 export const ADD_MESSAGE = "add/message";
 export const GET_CHANNELS = "/channels";
 export const DELETE_MESSAGE = "delete/message";
+
+// SoftOnCloud Chat_Api (real product API)
+export const CHAT_PRIVATE = "/api/chat/private";
+export const CHAT_BY_ID = "/api/chat";
+export const CHAT_NOTIFICATIONS = "/api/chat/notifications";
+export const CHAT_UNREAD_COUNTS = "/api/chat/unread-counts";
+export const CHAT_ATTACHMENTS_UPLOAD = "/api/chat/attachments/upload";
+export const CHAT_ATTACHMENTS_DOWNLOAD = "/api/chat/attachments/download";
+export const CHAT_ATTACHMENTS_LIMITS = "/api/chat/attachments/limits";
+export const CHAT_MESSAGES = "/api/chat/messages";
+export const CHAT_MESSAGE_FORWARD = "/api/chat/messages"; // POST .../{messageId}/forward
+export const CHAT_MESSAGE_DELETE = "/api/chat/messages"; // DELETE .../{messageId}
+export const CHAT_MESSAGE_STAR = "/api/chat/messages"; // PUT .../{messageId}/star
+export const CHAT_MESSAGE_REACTION = "/api/chat/messages"; // POST .../{messageId}/reaction
+export const CHAT_CLEAR = "/api/chat"; // POST .../{chatId}/clear
+export const CHAT_DELETE = "/api/chat"; // DELETE .../{chatId}
+export const CHAT_GROUPS = "/api/chat/groups";
 
 //Mailbox
 export const GET_MAIL_DETAILS = "/mail";
