@@ -33,6 +33,7 @@ const bindChatHubHandlers = (connection) => {
   connection.off("ChatCleared");
   connection.off("ChatDeleted");
   connection.off("MessageReaction");
+  connection.off("AnnouncementChanged");
 
   connection.on("UserOnline", (userId) => {
     notifyChatPresence("UserOnline", userId);
@@ -67,6 +68,9 @@ const bindChatHubHandlers = (connection) => {
   });
   connection.on("MessageReaction", (payload) => {
     notifyChatPresence("MessageReaction", payload);
+  });
+  connection.on("AnnouncementChanged", (payload) => {
+    notifyChatPresence("AnnouncementChanged", payload);
   });
 
   connection.onreconnecting(() => {
@@ -141,7 +145,7 @@ export const ensureChatHubConnection = async () => {
 
 /**
  * Subscribe to chat hub events on the shared SignalR connection.
- * Events: UserOnline | UserOffline | OnlineUsers | ReceiveMessage | ReceiveNotification | MessageDelivered | MessagesRead | MessageReaction | MessageDeleted | ChatCleared | ChatDeleted | ConnectionState
+ * Events: UserOnline | UserOffline | OnlineUsers | ReceiveMessage | ReceiveNotification | MessageDelivered | MessagesRead | MessageReaction | MessageDeleted | ChatCleared | ChatDeleted | AnnouncementChanged | ConnectionState
  * Returns unsubscribe function.
  */
 export const subscribeChatPresence = (listener) => {
@@ -2280,4 +2284,211 @@ export const resolveUserAvatarUrl = (userId, apiAvatarUrl = null) => {
       : null;
   if (fromApi) return fromApi;
   return getStoredProfileAvatar(userId);
+};
+
+// ─── Announcements (Chat_Api /api/announcements) ─────────────────────────────
+
+const unwrapAnnouncementList = (response) => {
+  const raw = response?.data ?? response;
+  const items = Array.isArray(raw?.items)
+    ? raw.items
+    : Array.isArray(raw?.Items)
+      ? raw.Items
+      : Array.isArray(raw)
+        ? raw
+        : [];
+  return {
+    items,
+    page: Number(raw?.page ?? raw?.Page ?? 1),
+    pageSize: Number(raw?.pageSize ?? raw?.PageSize ?? 10),
+    totalCount: Number(raw?.totalCount ?? raw?.TotalCount ?? items.length),
+  };
+};
+
+/** GET /api/announcements */
+export const getAnnouncements = async (params = {}) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(`${base}${url.CHAT_ANNOUNCEMENTS}`, {
+      ...chatTenantRequestConfig(ctx),
+      params: { ...tenantQuery(ctx), ...params },
+    });
+    return unwrapAnnouncementList(response);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/announcements/{id} */
+export const getAnnouncementById = async (announcementId) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.get(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}`,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** POST /api/announcements */
+export const createAnnouncement = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const tenant = tenantQuery(ctx);
+  try {
+    return await axios.post(
+      `${base}${url.CHAT_ANNOUNCEMENTS}`,
+      {
+        ...data,
+        orgId: tenant.orgId,
+        appId: tenant.appId,
+        fiscalYearId: tenant.fiscalYearId,
+      },
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/announcements/{id} */
+export const updateAnnouncement = async (announcementId, data) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const tenant = tenantQuery(ctx);
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}`,
+      {
+        ...data,
+        orgId: tenant.orgId,
+        appId: tenant.appId,
+        fiscalYearId: tenant.fiscalYearId,
+      },
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** DELETE /api/announcements/{id} */
+export const deleteAnnouncement = async (announcementId) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.delete(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}`,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** POST /api/announcements/{id}/read */
+export const markAnnouncementRead = async (announcementId) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.post(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}/read`,
+      {},
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** POST /api/announcements/{id}/pin */
+export const pinAnnouncement = async (announcementId) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.post(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}/pin`,
+      {},
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** POST /api/announcements/{id}/unpin */
+export const unpinAnnouncement = async (announcementId) => {
+  const id = Number(announcementId);
+  if (!Number.isFinite(id) || id <= 0) throw new Error("announcementId is required.");
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.post(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/${id}/unpin`,
+      {},
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/announcement-categories */
+export const getAnnouncementCategories = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_ANNOUNCEMENT_CATEGORIES}`,
+      chatTenantRequestConfig(ctx)
+    );
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.data)) return response.data;
+    return [];
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/announcements/stats */
+export const getAnnouncementStats = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.get(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/stats`,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/announcements/unread-count */
+export const getUnreadAnnouncementCount = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_ANNOUNCEMENTS}/unread-count`,
+      chatTenantRequestConfig(ctx)
+    );
+    return Number(response?.unreadCount ?? response?.UnreadCount ?? 0);
+  } catch (error) {
+    rethrowChatError(error);
+  }
 };

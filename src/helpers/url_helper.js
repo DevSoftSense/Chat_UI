@@ -61,6 +61,8 @@ export const CHAT_MESSAGE_REACTION = "/api/chat/messages"; // POST .../{messageI
 export const CHAT_CLEAR = "/api/chat"; // POST .../{chatId}/clear
 export const CHAT_DELETE = "/api/chat"; // DELETE .../{chatId}
 export const CHAT_GROUPS = "/api/chat/groups";
+export const CHAT_ANNOUNCEMENTS = "/api/announcements";
+export const CHAT_ANNOUNCEMENT_CATEGORIES = "/api/announcement-categories";
 
 //Mailbox
 export const GET_MAIL_DETAILS = "/mail";

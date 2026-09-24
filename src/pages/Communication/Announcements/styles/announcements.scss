@@ -1,0 +1,223 @@
+/* Velzon theme helpers for Announcements (light + dark via --vz-*) */
+.page-content {
+  .comm-ann-card.comm-ann-unread {
+    background: rgba(var(--vz-success-rgb, 10, 179, 156), 0.04);
+  }
+
+  .comm-ann-card-pinned {
+    /* Left accent — follows Velzon theme primary (light/dark + theme color) */
+    border-left: 3px solid var(--vz-primary, #405189) !important;
+    background: var(--vz-secondary-bg, var(--vz-card-bg, #fff));
+
+    .comm-ann-pinned-badge {
+      font-weight: 500;
+      color: var(--vz-primary, #405189) !important;
+      background-color: rgba(var(--vz-primary-rgb, 64, 81, 137), 0.12) !important;
+    }
+
+    .comm-ann-card-top-actions {
+      flex-shrink: 0;
+    }
+
+    .comm-ann-pin-btn {
+      line-height: 1;
+      color: var(--vz-primary, #405189);
+    }
+  }
+
+  .comm-ann-filters {
+    .search-box {
+      .search-icon {
+        background: transparent;
+        color: var(--vz-secondary-color, #878a99);
+        line-height: 1;
+        cursor: pointer;
+
+        &:hover {
+          color: var(--vz-primary, #405189);
+        }
+      }
+    }
+
+    .nav-pills {
+      .nav-link {
+        color: var(--vz-body-color, #212529);
+
+        &:hover {
+          color: var(--vz-primary, #405189);
+          background-color: rgba(var(--vz-primary-rgb, 64, 81, 137), 0.08);
+        }
+
+        &.active {
+          color: #fff;
+          background-color: var(--vz-primary, #405189);
+        }
+      }
+    }
+  }
+
+  .comm-ann-card {
+    position: relative;
+    z-index: 1;
+    border-color: var(--vz-border-color, #e9ebec) !important;
+    color: var(--vz-body-color, #212529);
+
+    .comm-ann-card-meta {
+      min-width: 7.5rem;
+    }
+
+    /* Whole row above next row's ⋮ so Pin text is not covered */
+    &.is-menu-open {
+      z-index: 1100;
+    }
+  }
+
+  /* Keep ⋮ menu above clipped parents (mockup dropdown) */
+  .card,
+  .card-body,
+  .comm-ann-card,
+  .comm-ann-card-pinned {
+    overflow: visible !important;
+  }
+
+  .comm-ann-card-actions {
+    position: relative;
+    z-index: 1;
+    flex-shrink: 0;
+
+    .btn-icon,
+    .comm-ann-more-btn {
+      width: 1.75rem;
+      height: 1.75rem;
+      padding: 0;
+      position: relative;
+      z-index: 1;
+      color: var(--vz-secondary-color, #878a99);
+
+      &:hover {
+        color: var(--vz-primary, #405189);
+      }
+    }
+
+    /* Open menu sits above every other row's ⋮ button */
+    &.is-open {
+      z-index: 1100;
+    }
+
+    .comm-ann-card-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      left: auto;
+      z-index: 1101;
+      display: block;
+      min-width: 10rem;
+      padding: 0.35rem 0;
+      margin: 0.15rem 0 0;
+      background: var(--vz-secondary-bg, var(--vz-dropdown-bg, #fff));
+      border: 1px solid var(--vz-border-color, #e9ebec);
+      border-radius: 0.4rem;
+      box-shadow: 0 0.5rem 1.25rem rgba(var(--vz-dark-rgb, 33, 37, 41), 0.12);
+
+      .dropdown-item {
+        display: block;
+        width: 100%;
+        padding: 0.45rem 1rem;
+        clear: both;
+        font-size: 0.875rem;
+        font-weight: 400;
+        color: var(--vz-body-color, #212529);
+        text-align: inherit;
+        white-space: nowrap;
+        background-color: transparent;
+        border: 0;
+
+        &:hover,
+        &:focus {
+          color: var(--vz-body-color, #212529);
+          background-color: var(--vz-light, #f3f6f9);
+        }
+
+        &.text-danger {
+          color: var(--vz-danger, #f06548) !important;
+
+          &:hover,
+          &:focus {
+            color: var(--vz-danger, #f06548) !important;
+            background-color: rgba(var(--vz-danger-rgb, 240, 101, 72), 0.1);
+          }
+        }
+      }
+    }
+  }
+
+  /* Pagination — theme-aware (matches last image: "1-4 of N announcements") */
+  .comm-ann-pagination {
+    border-top: 1px solid var(--vz-border-color, #e9ebec);
+
+    .comm-ann-pagination-info {
+      color: var(--vz-secondary-color, #878a99);
+    }
+
+    .comm-ann-pagination-btns {
+      .btn-soft-primary {
+        color: var(--vz-primary, #405189);
+        background-color: rgba(var(--vz-primary-rgb, 64, 81, 137), 0.1);
+        border-color: transparent;
+
+        &:hover:not(:disabled) {
+          color: #fff;
+          background-color: var(--vz-primary, #405189);
+        }
+
+        &:disabled {
+          opacity: 0.55;
+          color: var(--vz-secondary-color, #878a99);
+          background-color: var(--vz-light, #f3f6f9);
+        }
+      }
+    }
+  }
+
+  .comm-ann-cat-item {
+    background: transparent;
+    color: var(--vz-secondary-color, #878a99);
+
+    &.active {
+      background: var(--vz-light, #f3f6f9);
+      color: var(--vz-primary, #405189);
+      font-weight: 500;
+    }
+
+    &:hover {
+      background: var(--vz-light, #f3f6f9);
+    }
+  }
+
+  .comm-ann-recipients {
+    .comm-ann-recipient-list {
+      max-height: 220px;
+      overflow: auto;
+      background: var(--vz-body-bg, #fff);
+
+      label {
+        cursor: pointer;
+        transition: background 0.15s ease;
+
+        &:hover {
+          background: var(--vz-light, #f3f6f9);
+        }
+
+        &:last-child {
+          border-bottom: none !important;
+        }
+      }
+    }
+  }
+
+  .comm-ann-sidebar-card {
+    .card-title {
+      font-size: 0.95rem;
+    }
+  }
+}

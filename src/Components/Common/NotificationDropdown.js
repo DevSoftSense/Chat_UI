@@ -11,7 +11,7 @@ import {
   TabContent,
   TabPane,
 } from "reactstrap";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import classnames from "classnames";
 import SimpleBar from "simplebar-react";
 import bell from "../../assets/images/svg/bell.svg";
@@ -42,6 +42,9 @@ const normalizeNotification = (raw) => {
   const referenceType = String(
     raw.referenceType ?? raw.ReferenceType ?? ""
   );
+  const referenceEntity = String(
+    raw.referenceEntity ?? raw.ReferenceEntity ?? ""
+  );
   const groupIdRaw = raw.groupId ?? raw.GroupId;
   let groupId =
     groupIdRaw != null && groupIdRaw !== ""
@@ -62,11 +65,43 @@ const normalizeNotification = (raw) => {
     message: raw.message ?? raw.Message ?? "",
     referenceId: raw.referenceId ?? raw.ReferenceId ?? null,
     referenceType: referenceType || null,
+    referenceEntity: referenceEntity || null,
     senderUserId: raw.senderUserId ?? raw.SenderUserId ?? null,
     groupId,
     createdDate: raw.createdDate ?? raw.CreatedDate ?? null,
     isRead: Boolean(raw.isRead ?? raw.IsRead),
   };
+};
+
+/** Announcement alert → open /communication/announcements */
+const isAnnouncementNotification = (item) => {
+  if (!item) return false;
+  const type = String(item.notificationType || "").toUpperCase();
+  const refType = String(item.referenceType || "").toUpperCase();
+  const refEntity = String(item.referenceEntity || "").toLowerCase();
+  const title = String(item.title || "").toLowerCase();
+  if (type === "ANNOUNCEMENT" || refType === "ANNOUNCEMENT") return true;
+  if (refEntity.includes("announcement")) return true;
+  if (title.includes("announcement")) return true;
+  return false;
+};
+
+const openAnnouncementsPage = (navigate, location, openAnnouncementId) => {
+  const state = {
+    openAnnouncementId:
+      openAnnouncementId != null && openAnnouncementId !== ""
+        ? String(openAnnouncementId)
+        : null,
+    openTs: Date.now(),
+  };
+  const onAnnouncements = String(location.pathname || "")
+    .toLowerCase()
+    .includes("/communication/announcements");
+  if (onAnnouncements) {
+    navigate(location.pathname, { replace: true, state });
+  } else {
+    navigate("/communication/announcements", { state });
+  }
 };
 
 const formatRelativeTime = (value) => {
@@ -85,16 +120,13 @@ const formatRelativeTime = (value) => {
 
 const NotificationDropdown = () => {
   const navigate = useNavigate();
+  const location = useLocation();
     const [isNotificationDropdown, setIsNotificationDropdown] = useState(false);
   const [activeTab, setActiveTab] = useState("1");
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-    const toggleNotificationDropdown = () => {
-    setIsNotificationDropdown((open) => !open);
-    };
 
     const toggleTab = (tab) => {
     if (activeTab !== tab) setActiveTab(tab);
@@ -129,6 +161,17 @@ const NotificationDropdown = () => {
       setLoading(false);
     }
   }, [applyListResult]);
+
+  const toggleNotificationDropdown = () => {
+    setIsNotificationDropdown((open) => {
+      const next = !open;
+      if (next) {
+        // Refresh on open so announcement alerts appear after login / other tab create
+        loadNotifications();
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     loadNotifications();
@@ -168,6 +211,12 @@ const NotificationDropdown = () => {
   );
 
   const openRelatedChat = (item) => {
+    // Announcement notification → Announcements page (+ open that item)
+    if (isAnnouncementNotification(item)) {
+      openAnnouncementsPage(navigate, location, item.referenceId);
+      return;
+    }
+
     if (item?.notificationType !== "MESSAGE") return;
 
     const focusMessageId = item.referenceId;
@@ -251,7 +300,13 @@ const NotificationDropdown = () => {
   };
 
   const renderNotificationItem = (item) => {
-    const isMessage = item.notificationType === "MESSAGE";
+    const isMessage = item.notificationType === "MESSAGE" && !isAnnouncementNotification(item);
+    const isAnnouncement = isAnnouncementNotification(item);
+    const itemLink = isAnnouncement
+      ? "/communication/announcements"
+      : item.groupId != null
+        ? "/communication/groups"
+        : "/communication/messages";
     return (
       <div
         key={item.notificationId}
@@ -274,21 +329,27 @@ const NotificationDropdown = () => {
             <span
               className={classnames(
                 "avatar-title rounded-circle fs-16",
-                isMessage
-                  ? "bg-danger-subtle text-danger"
-                  : "bg-info-subtle text-info"
+                isAnnouncement
+                  ? "bg-primary-subtle text-primary"
+                  : isMessage
+                    ? "bg-danger-subtle text-danger"
+                    : "bg-info-subtle text-info"
               )}
             >
               <i
                 className={
-                  isMessage ? "bx bx-message-square-dots" : "bx bx-badge-check"
+                  isAnnouncement
+                    ? "bx bx-megaphone"
+                    : isMessage
+                      ? "bx bx-message-square-dots"
+                      : "bx bx-badge-check"
                 }
               ></i>
             </span>
           </div>
           <div className="flex-grow-1">
             <Link
-              to="/communication/messages"
+              to={itemLink}
               className="stretched-link"
               onClick={(e) => e.preventDefault()}
             >
@@ -309,7 +370,7 @@ const NotificationDropdown = () => {
     );
   };
 
-  const renderList = (items, emptyTitle) => {
+  const renderList = (items, emptyTitle, viewAllTo = "/communication/messages") => {
     if (loading) {
       return (
         <div className="text-center text-muted py-4 fs-13">Loading...</div>
@@ -328,6 +389,16 @@ const NotificationDropdown = () => {
           </div>
           <div className="text-center pb-5 mt-2">
             <h6 className="fs-18 fw-semibold lh-base">{emptyTitle}</h6>
+            <button
+              type="button"
+              className="btn btn-soft-primary btn-sm mt-2"
+              onClick={() => {
+                setIsNotificationDropdown(false);
+                navigate("/communication/announcements");
+              }}
+            >
+              Go to Announcements
+            </button>
           </div>
         </div>
       );
@@ -336,13 +407,17 @@ const NotificationDropdown = () => {
       <SimpleBar style={{ maxHeight: "300px" }} className="pe-2">
         {items.map(renderNotificationItem)}
         <div className="my-3 text-center">
-          <Link
-            to="/communication/messages"
+          <button
+            type="button"
             className="btn btn-soft-success waves-effect waves-light"
+            onClick={() => {
+              setIsNotificationDropdown(false);
+              navigate(viewAllTo);
+            }}
           >
             View All Notifications{" "}
             <i className="ri-arrow-right-line align-middle"></i>
-          </Link>
+          </button>
         </div>
       </SimpleBar>
     );
@@ -433,20 +508,26 @@ const NotificationDropdown = () => {
                         <TabPane tabId="1" className="py-2 ps-2">
               {renderList(
                 notifications,
-                "Hey! You have no any notifications"
+                "Hey! You have no any notifications",
+                notifications.some(isAnnouncementNotification) &&
+                  !notifications.some((n) => n.notificationType === "MESSAGE")
+                  ? "/communication/announcements"
+                  : "/communication/messages"
               )}
                         </TabPane>
                         <TabPane tabId="2" className="py-2 ps-2">
               {renderList(
                 messageNotifications,
-                "Hey! You have no any notifications"
+                "Hey! You have no any notifications",
+                "/communication/messages"
               )}
                         </TabPane>
                         <TabPane tabId="3" className="p-4">
               {alertNotifications.length
                 ? renderList(
                     alertNotifications,
-                    "Hey! You have no any notifications"
+                    "Hey! You have no any notifications",
+                    "/communication/announcements"
                   )
                 : (
                     <>
@@ -457,6 +538,16 @@ const NotificationDropdown = () => {
                         <h6 className="fs-18 fw-semibold lh-base">
                           Hey! You have no any notifications
                         </h6>
+                        <button
+                          type="button"
+                          className="btn btn-soft-primary btn-sm mt-2"
+                          onClick={() => {
+                            setIsNotificationDropdown(false);
+                            navigate("/communication/announcements");
+                          }}
+                        >
+                          Go to Announcements
+                        </button>
                             </div>
                     </>
                   )}
