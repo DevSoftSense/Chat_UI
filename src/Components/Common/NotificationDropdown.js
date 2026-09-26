@@ -19,6 +19,8 @@ import {
   getChatNotifications,
   markChatNotificationRead,
   subscribeChatPresence,
+  isChatNotificationAllowed,
+  ensureChatRuntimePrefsLoaded,
 } from "../../helpers/softoncloud_auth_helper";
 
 const CHAT_UI_STORAGE_KEY = "chatUiState";
@@ -136,21 +138,20 @@ const NotificationDropdown = () => {
     const list = Array.isArray(result?.notifications)
       ? result.notifications.map(normalizeNotification).filter(Boolean)
       : [];
+    // Settings → Notifications All/None (Message / Group / Announcement).
+    const allowed = list.filter((n) => isChatNotificationAllowed(n));
     // Bell dropdown shows unread only — click clears them from the list
-    const unreadOnly = list.filter((n) => !n.isRead);
+    const unreadOnly = allowed.filter((n) => !n.isRead);
     setNotifications(unreadOnly);
-    const apiUnread = Number(result?.unreadCount);
-    setUnreadCount(
-      Number.isFinite(apiUnread)
-        ? Math.max(0, apiUnread)
-        : unreadOnly.length
-    );
+    setUnreadCount(unreadOnly.length);
   }, []);
 
   const loadNotifications = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
+      // Settings prefs first — Announcements None must hide bell items.
+      await ensureChatRuntimePrefsLoaded();
       const result = await getChatNotifications();
       applyListResult(result);
     } catch (err) {
@@ -181,6 +182,8 @@ const NotificationDropdown = () => {
   useEffect(() => {
     const unsubscribe = subscribeChatPresence((event, payload) => {
       if (event !== "ReceiveNotification") return;
+      // Helper already gated — double-check for list filter consistency.
+      if (!isChatNotificationAllowed(payload)) return;
       const next = normalizeNotification(payload);
       if (!next?.notificationId) return;
 
@@ -195,6 +198,19 @@ const NotificationDropdown = () => {
       }
     });
     return unsubscribe;
+  }, []);
+
+  // Re-filter bell when Settings → Notifications saved.
+  useEffect(() => {
+    const onPrefs = () => {
+      setNotifications((prev) => {
+        const next = prev.filter((n) => isChatNotificationAllowed(n));
+        setUnreadCount(next.filter((n) => !n.isRead).length);
+        return next;
+      });
+    };
+    window.addEventListener("chat-runtime-prefs-updated", onPrefs);
+    return () => window.removeEventListener("chat-runtime-prefs-updated", onPrefs);
   }, []);
 
   const messageNotifications = useMemo(
@@ -214,6 +230,28 @@ const NotificationDropdown = () => {
     // Announcement notification → Announcements page (+ open that item)
     if (isAnnouncementNotification(item)) {
       openAnnouncementsPage(navigate, location, item.referenceId);
+      return;
+    }
+
+    // Group invite / added-to-group → Groups page (no message focus)
+    const isGroupInvite =
+      String(item?.notificationType || "").toUpperCase() === "GROUP" ||
+      String(item?.referenceEntity || "")
+        .toLowerCase()
+        .includes("tab_groups") ||
+      /^GROUP:\d+$/i.test(String(item?.referenceType || "").trim());
+
+    if (isGroupInvite && item.groupId != null) {
+      writeChatUiState({
+        openGroupId: String(item.groupId),
+        focusMessageId: null,
+      });
+      navigate("/communication/groups", {
+        state: {
+          openGroupId: String(item.groupId),
+          focusMessageId: null,
+        },
+      });
       return;
     }
 
@@ -265,6 +303,31 @@ const NotificationDropdown = () => {
       },
     });
   };
+
+  // OS desktop notification click → open related message / group / announcement
+  useEffect(() => {
+    const onDesktopClick = (event) => {
+      const detail = event?.detail;
+      if (!detail) return;
+      const path = detail.path || "/communication/messages";
+      const state = detail.state || {};
+      if (String(path).includes("/communication/announcements")) {
+        openAnnouncementsPage(
+          navigate,
+          location,
+          state.openAnnouncementId ?? null
+        );
+        return;
+      }
+      navigate(path, { state });
+    };
+    window.addEventListener("chat-desktop-notification-click", onDesktopClick);
+    return () =>
+      window.removeEventListener(
+        "chat-desktop-notification-click",
+        onDesktopClick
+      );
+  }, [navigate, location]);
 
   const handleOpenNotification = async (item) => {
     if (!item?.notificationId) return;

@@ -46,7 +46,6 @@ export const buildCommunicationMenu = (options = {}) => {
       groupsBadge
     ),
     link("comm-announcements", "Announcements", "ri-megaphone-line", "/communication/announcements"),
-    link("comm-management", "Management Dashboard", "ri-bar-chart-box-line", "/communication/management"),
     link("comm-settings", "Settings", "ri-settings-3-line", "/communication/settings"),
   ];
 };

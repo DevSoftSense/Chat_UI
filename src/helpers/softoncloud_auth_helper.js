@@ -1,6 +1,7 @@
 import { APIClient, setAuthorization } from "./api_helper";
 import * as url from "./url_helper";
 import { api as appConfig } from "../config";
+import { APP_LOGO } from "./branding";
 import axios from "axios";
 import * as signalR from "@microsoft/signalr";
 
@@ -10,8 +11,70 @@ const api = new APIClient();
 let chatHubConnection = null;
 let chatHubStartPromise = null;
 const chatPresenceListeners = new Set();
+/** Last known online user ids — late subscribers get this without waiting for hub. */
+let lastOnlineUserIds = [];
+/** userId → { status, statusMessage } from Settings / hub (Away/Busy/Offline). */
+let lastUserStatuses = {};
+
+const syncPresenceCache = (event, payload) => {
+  if (event === "OnlineUsers") {
+    lastOnlineUserIds = Array.isArray(payload)
+      ? payload.map((id) => String(id))
+      : [];
+    return;
+  }
+  if (event === "UserOnline") {
+    const id = String(payload);
+    if (id && !lastOnlineUserIds.includes(id)) {
+      lastOnlineUserIds = [...lastOnlineUserIds, id];
+    }
+    return;
+  }
+  if (event === "UserOffline") {
+    const id = String(payload);
+    lastOnlineUserIds = lastOnlineUserIds.filter((x) => x !== id);
+    return;
+  }
+  if (event === "UserStatusChanged") {
+    const userId = String(
+      payload?.userId ?? payload?.UserId ?? ""
+    );
+    if (!userId) return;
+    const status = String(
+      payload?.status ?? payload?.Status ?? "Online"
+    ).trim() || "Online";
+    const statusMessage = String(
+      payload?.statusMessage ?? payload?.StatusMessage ?? ""
+    );
+    lastUserStatuses = {
+      ...lastUserStatuses,
+      [userId]: { status, statusMessage },
+    };
+    return;
+  }
+  if (event === "UserStatuses") {
+    const map = {};
+    const list = Array.isArray(payload) ? payload : [];
+    list.forEach((row) => {
+      const userId = String(row?.userId ?? row?.UserId ?? "");
+      if (!userId) return;
+      map[userId] = {
+        status: String(row?.status ?? row?.Status ?? "Online").trim() || "Online",
+        statusMessage: String(
+          row?.statusMessage ?? row?.StatusMessage ?? ""
+        ),
+      };
+    });
+    lastUserStatuses = map;
+    return;
+  }
+  if (event === "ConnectionState" && payload === "disconnected") {
+    lastOnlineUserIds = [];
+  }
+};
 
 const notifyChatPresence = (event, payload) => {
+  syncPresenceCache(event, payload);
   chatPresenceListeners.forEach((listener) => {
     try {
       listener(event, payload);
@@ -20,6 +83,523 @@ const notifyChatPresence = (event, payload) => {
     }
   });
 };
+
+// ─── Settings runtime prefs (session) — used by bell / hub (not Messages/Groups UI) ───
+const CHAT_RUNTIME_PREFS_KEY = "chatRuntimePrefs";
+let chatRuntimePrefsLoadPromise = null;
+let chatRuntimePrefsLoadedOk = false;
+const DEFAULT_CHAT_RUNTIME_PREFS = {
+  defaultMessageTypeId: 0,
+  defaultTypeName: "Text",
+  requestReadReceipt: true,
+  autoSaveDraft: false,
+  // Notification delivery: all | browser | bell_browser
+  messageReceived: "all",
+  groupMessages: "all",
+  announcements: "all",
+  soundEnabled: true,
+  desktopEnabled: true,
+  emailEnabled: false,
+  mobilePushEnabled: false,
+  status: "Online",
+  statusMessage: "",
+};
+
+/** Coerce API / form values — "false" must be false (Boolean("false") === true). */
+const toPrefBool = (value, fallback = true) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const s = String(value).trim().toLowerCase();
+  if (s === "false" || s === "0" || s === "no" || s === "none" || s === "off") {
+    return false;
+  }
+  if (s === "true" || s === "1" || s === "yes" || s === "all" || s === "on") {
+    return true;
+  }
+  return fallback;
+};
+
+/**
+ * Settings → Notifications delivery mode.
+ * all | browser | bell_browser (Notification ball with browser)
+ */
+export const normalizeNotifMode = (value, fallback = "all") => {
+  if (value === true || value === 1) return "all";
+  if (value === false || value === 0) return "browser";
+  const s = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s+]+/g, "_");
+  if (!s) return fallback;
+  if (s === "all" || s === "true" || s === "on") return "all";
+  if (s === "browser" || s === "desktop") return "browser";
+  if (
+    s === "bell_browser" ||
+    s === "bell" ||
+    s === "notification_ball" ||
+    s === "notification_ball_with_browser" ||
+    s === "ball_browser" ||
+    s === "bell+browser"
+  ) {
+    return "bell_browser";
+  }
+  if (s === "none" || s === "false" || s === "off") return "browser";
+  return fallback;
+};
+
+/** Header notification bell (ball) shows this channel? */
+export const notifModeShowsBell = (mode) => {
+  const m = normalizeNotifMode(mode);
+  // All = ball only; Ball + Browser = both
+  return m === "all" || m === "bell_browser";
+};
+
+/** Browser desktop Notification API shows this channel? */
+export const notifModeShowsBrowser = (mode) => {
+  const m = normalizeNotifMode(mode);
+  // Browser = browser only; Ball + Browser = both (All = ball only)
+  return m === "browser" || m === "bell_browser";
+};
+
+const readChatRuntimePrefsRaw = () => {
+  try {
+    const raw = sessionStorage.getItem(CHAT_RUNTIME_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_CHAT_RUNTIME_PREFS };
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_CHAT_RUNTIME_PREFS,
+      ...parsed,
+      requestReadReceipt: toPrefBool(parsed.requestReadReceipt, true),
+      autoSaveDraft: toPrefBool(parsed.autoSaveDraft, false),
+      messageReceived: normalizeNotifMode(parsed.messageReceived, "all"),
+      groupMessages: normalizeNotifMode(parsed.groupMessages, "all"),
+      announcements: normalizeNotifMode(parsed.announcements, "all"),
+      soundEnabled: toPrefBool(parsed.soundEnabled, true),
+      desktopEnabled: toPrefBool(parsed.desktopEnabled, true),
+      emailEnabled: toPrefBool(parsed.emailEnabled, false),
+      mobilePushEnabled: toPrefBool(parsed.mobilePushEnabled, false),
+    };
+  } catch {
+    return { ...DEFAULT_CHAT_RUNTIME_PREFS };
+  }
+};
+
+/** Read Settings prefs cached for runtime (notifications / status / message defaults). */
+export const getChatRuntimePrefs = () => readChatRuntimePrefsRaw();
+
+/** Persist Settings prefs + notify listeners (Settings page save/load). */
+export const setChatRuntimePrefs = (partial) => {
+  const next = {
+    ...readChatRuntimePrefsRaw(),
+    ...(partial && typeof partial === "object" ? partial : {}),
+  };
+  next.messageReceived = normalizeNotifMode(next.messageReceived, "all");
+  next.groupMessages = normalizeNotifMode(next.groupMessages, "all");
+  next.announcements = normalizeNotifMode(next.announcements, "all");
+  next.soundEnabled = toPrefBool(next.soundEnabled, true);
+  next.desktopEnabled = toPrefBool(next.desktopEnabled, true);
+  next.requestReadReceipt = toPrefBool(next.requestReadReceipt, true);
+  next.autoSaveDraft = toPrefBool(next.autoSaveDraft, false);
+  try {
+    sessionStorage.setItem(CHAT_RUNTIME_PREFS_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+  chatRuntimePrefsLoadedOk = true;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("chat-runtime-prefs-updated", { detail: next })
+    );
+  } catch {
+    /* ignore */
+  }
+  return next;
+};
+
+/**
+ * Sync full GET /api/settings (or normalized Settings state) into runtime prefs.
+ * Keeps existing All/Browser/Bell modes when API only returns booleans.
+ */
+export const syncChatRuntimePrefsFromSettings = (settingsLike) => {
+  const data = settingsLike || {};
+  const messageDefaults = data.messageDefaults || data.MessageDefaults || {};
+  const notifications = data.notifications || data.Notifications || {};
+  const status = data.status || data.Status || {};
+  const existing = readChatRuntimePrefsRaw();
+  const types =
+    messageDefaults.messageTypes || messageDefaults.MessageTypes || [];
+  const defaultId = Number(
+    messageDefaults.defaultMessageTypeId ??
+      messageDefaults.DefaultMessageTypeId ??
+      0
+  );
+  const match = (Array.isArray(types) ? types : []).find(
+    (t) =>
+      Number(t?.messageTypeId ?? t?.MessageTypeId) === defaultId
+  );
+  const typeName = String(
+    match?.typeName ?? match?.TypeName ?? messageDefaults.defaultTypeName ?? "Text"
+  );
+
+  const pickMode = (incoming, prevMode) => {
+    if (incoming === undefined || incoming === null) {
+      return normalizeNotifMode(prevMode, "all");
+    }
+    // Explicit mode string from Settings form
+    if (typeof incoming === "string" && !/^(true|false)$/i.test(incoming)) {
+      return normalizeNotifMode(incoming, prevMode || "all");
+    }
+    // API boolean: true keep previous mode (or all); false → browser-only legacy
+    if (incoming === true || incoming === "true") {
+      return normalizeNotifMode(prevMode, "all");
+    }
+    if (incoming === false || incoming === "false") {
+      return "browser";
+    }
+    return normalizeNotifMode(incoming, prevMode || "all");
+  };
+
+  return setChatRuntimePrefs({
+    defaultMessageTypeId: defaultId,
+    defaultTypeName: typeName,
+    requestReadReceipt: toPrefBool(
+      messageDefaults.requestReadReceipt ?? messageDefaults.RequestReadReceipt,
+      true
+    ),
+    autoSaveDraft: toPrefBool(
+      messageDefaults.autoSaveDraft ?? messageDefaults.AutoSaveDraft,
+      false
+    ),
+    messageReceived: pickMode(
+      notifications.messageReceived ?? notifications.MessageReceived,
+      existing.messageReceived
+    ),
+    groupMessages: pickMode(
+      notifications.groupMessages ?? notifications.GroupMessages,
+      existing.groupMessages
+    ),
+    announcements: pickMode(
+      notifications.announcements ?? notifications.Announcements,
+      existing.announcements
+    ),
+    soundEnabled: toPrefBool(
+      notifications.soundEnabled ?? notifications.SoundEnabled,
+      true
+    ),
+    desktopEnabled: toPrefBool(
+      notifications.desktopEnabled ?? notifications.DesktopEnabled,
+      true
+    ),
+    emailEnabled: toPrefBool(
+      notifications.emailEnabled ?? notifications.EmailEnabled,
+      false
+    ),
+    mobilePushEnabled: toPrefBool(
+      notifications.mobilePushEnabled ?? notifications.MobilePushEnabled,
+      false
+    ),
+    status: String(status.status ?? status.Status ?? "Online").trim() || "Online",
+    statusMessage: String(
+      status.statusMessage ?? status.StatusMessage ?? ""
+    ),
+  });
+};
+
+/**
+ * Load GET /api/settings once into session prefs so bell respects
+ * Announcements / Messages / Groups All|None without opening Settings.
+ */
+export const ensureChatRuntimePrefsLoaded = async (force = false) => {
+  if (!force && chatRuntimePrefsLoadedOk) {
+    return readChatRuntimePrefsRaw();
+  }
+  if (!force && chatRuntimePrefsLoadPromise) return chatRuntimePrefsLoadPromise;
+  chatRuntimePrefsLoadPromise = (async () => {
+    try {
+      const raw = await getChatSettings();
+      const prefs = syncChatRuntimePrefsFromSettings(raw);
+      chatRuntimePrefsLoadedOk = true;
+      return prefs;
+    } catch {
+      chatRuntimePrefsLoadedOk = false;
+      return readChatRuntimePrefsRaw();
+    } finally {
+      chatRuntimePrefsLoadPromise = null;
+    }
+  })();
+  return chatRuntimePrefsLoadPromise;
+};
+
+const classifyNotificationChannel = (payload) => {
+  if (!payload || typeof payload !== "object") return "message";
+  const type = String(
+    payload.notificationType ?? payload.NotificationType ?? ""
+  ).toUpperCase();
+  const refType = String(
+    payload.referenceType ?? payload.ReferenceType ?? ""
+  ).toUpperCase();
+  const refEntity = String(
+    payload.referenceEntity ?? payload.ReferenceEntity ?? ""
+  ).toLowerCase();
+  const title = String(payload.title ?? payload.Title ?? "").toLowerCase();
+  const groupId = payload.groupId ?? payload.GroupId;
+
+  if (
+    type === "ANNOUNCEMENT" ||
+    refType === "ANNOUNCEMENT" ||
+    refEntity.includes("announcement") ||
+    title.includes("announcement")
+  ) {
+    return "announcement";
+  }
+  if (
+    type === "GROUP" ||
+    (groupId != null && groupId !== "") ||
+    /^GROUP:\d+$/i.test(refType) ||
+    refEntity.includes("tab_groups")
+  ) {
+    return "group";
+  }
+  return "message";
+};
+
+/** Channel mode for a notification payload (all | browser | bell_browser). */
+export const getChatNotificationMode = (payload) => {
+  const prefs = readChatRuntimePrefsRaw();
+  const channel = classifyNotificationChannel(payload);
+  if (channel === "announcement") return normalizeNotifMode(prefs.announcements);
+  if (channel === "group") return normalizeNotifMode(prefs.groupMessages);
+  return normalizeNotifMode(prefs.messageReceived);
+};
+
+/** Header bell (notification ball) — All / Notification ball with browser. */
+export const isChatNotificationAllowed = (payload) =>
+  notifModeShowsBell(getChatNotificationMode(payload));
+
+/** Browser desktop popup — Browser / Ball + Browser (Settings). */
+export const isChatBrowserNotificationAllowed = (payload) =>
+  notifModeShowsBrowser(getChatNotificationMode(payload));
+
+/** One OS popup per notificationId (SignalR retries / duplicate events). */
+const shownDesktopNotificationIds = new Set();
+
+const resolveChatNotificationIconUrl = () => {
+  try {
+    if (typeof window === "undefined" || !window.location?.origin) {
+      return APP_LOGO;
+    }
+    return new URL(APP_LOGO, window.location.origin).href;
+  } catch {
+    return `${typeof window !== "undefined" ? window.location.origin : ""}/logo.png`;
+  }
+};
+
+const writeChatUiStateFromDesktopNotif = (patch) => {
+  try {
+    const prev =
+      JSON.parse(sessionStorage.getItem("chatUiState") || "null") || {};
+    sessionStorage.setItem(
+      "chatUiState",
+      JSON.stringify({ ...prev, ...patch })
+    );
+  } catch {
+    /* ignore */
+  }
+};
+
+/** Resolve path + chatUiState for notification click (mirrors bell dropdown). */
+const resolveDesktopNotificationNavigation = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { path: "/communication/messages", state: {} };
+  }
+  const type = String(
+    payload.notificationType ?? payload.NotificationType ?? ""
+  ).toUpperCase();
+  const refType = String(
+    payload.referenceType ?? payload.ReferenceType ?? ""
+  );
+  const refEntity = String(
+    payload.referenceEntity ?? payload.ReferenceEntity ?? ""
+  ).toLowerCase();
+  const title = String(payload.title ?? payload.Title ?? "").toLowerCase();
+  const referenceId = payload.referenceId ?? payload.ReferenceId ?? null;
+  const senderUserId = payload.senderUserId ?? payload.SenderUserId ?? null;
+  const groupIdRaw = payload.groupId ?? payload.GroupId;
+  let groupId =
+    groupIdRaw != null && groupIdRaw !== "" ? Number(groupIdRaw) : null;
+  if (!(Number.isFinite(groupId) && groupId > 0) && refType) {
+    const match = /^GROUP:(\d+)$/i.exec(String(refType).trim());
+    if (match) groupId = Number(match[1]);
+  }
+  if (!(Number.isFinite(groupId) && groupId > 0)) groupId = null;
+
+  const isAnnouncement =
+    type === "ANNOUNCEMENT" ||
+    String(refType).toUpperCase() === "ANNOUNCEMENT" ||
+    refEntity.includes("announcement") ||
+    title.includes("announcement");
+  if (isAnnouncement) {
+    return {
+      path: "/communication/announcements",
+      state: {
+        openAnnouncementId:
+          referenceId != null && referenceId !== ""
+            ? String(referenceId)
+            : null,
+        openTs: Date.now(),
+      },
+    };
+  }
+
+  // Message first (incl. group messages with referenceType GROUP:n)
+  if (type === "MESSAGE" || type === "") {
+    const focusMessageId =
+      referenceId != null && referenceId !== "" ? String(referenceId) : null;
+    if (groupId != null) {
+      writeChatUiStateFromDesktopNotif({
+        openGroupId: String(groupId),
+        focusMessageId,
+      });
+      return {
+        path: "/communication/groups",
+        state: { openGroupId: String(groupId), focusMessageId },
+      };
+    }
+    if (senderUserId != null && senderUserId !== "") {
+      writeChatUiStateFromDesktopNotif({
+        activeUserId: String(senderUserId),
+        focusMessageId,
+      });
+      return {
+        path: "/communication/messages",
+        state: {
+          openPeerUserId: String(senderUserId),
+          focusMessageId,
+        },
+      };
+    }
+  }
+
+  const isGroupInvite =
+    type === "GROUP" ||
+    refEntity.includes("tab_groups") ||
+    /^GROUP:\d+$/i.test(String(refType).trim());
+
+  if (isGroupInvite && groupId != null) {
+    writeChatUiStateFromDesktopNotif({
+      openGroupId: String(groupId),
+      focusMessageId: null,
+    });
+    return {
+      path: "/communication/groups",
+      state: { openGroupId: String(groupId), focusMessageId: null },
+    };
+  }
+
+  return { path: "/communication/messages", state: {} };
+};
+
+const maybeShowDesktopChatNotification = (payload) => {
+  if (!isChatBrowserNotificationAllowed(payload)) return;
+  const prefs = readChatRuntimePrefsRaw();
+  if (prefs.desktopEnabled === false) return;
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  // OS popup only when tab is in background (still visible after user returns).
+  if (typeof document !== "undefined" && !document.hidden) return;
+
+  const notificationId =
+    payload?.notificationId ?? payload?.NotificationId ?? null;
+  const dedupeKey =
+    notificationId != null && notificationId !== ""
+      ? String(notificationId)
+      : null;
+  if (dedupeKey && shownDesktopNotificationIds.has(dedupeKey)) return;
+  if (dedupeKey) {
+    shownDesktopNotificationIds.add(dedupeKey);
+    // Bound growth — keep recent ids only
+    if (shownDesktopNotificationIds.size > 200) {
+      const first = shownDesktopNotificationIds.values().next().value;
+      shownDesktopNotificationIds.delete(first);
+    }
+  }
+
+  const title = String(payload?.title ?? payload?.Title ?? "SoftOnCloud Chat");
+  const body = String(payload?.message ?? payload?.Message ?? "");
+  const icon = resolveChatNotificationIconUrl();
+  const tag = dedupeKey ? `soc-chat-${dedupeKey}` : "soc-chat-message";
+
+  try {
+    const n = new Notification(title, {
+      body,
+      icon,
+      badge: icon,
+      tag,
+      renotify: false,
+      silent: prefs.soundEnabled === false,
+    });
+    n.onclick = () => {
+      try {
+        n.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        window.focus();
+      } catch {
+        /* ignore */
+      }
+      const nav = resolveDesktopNotificationNavigation(payload);
+      try {
+        window.dispatchEvent(
+          new CustomEvent("chat-desktop-notification-click", {
+            detail: { payload, ...nav },
+          })
+        );
+      } catch {
+        /* ignore */
+      }
+    };
+  } catch {
+    /* ignore */
+  }
+};
+
+/** Publish My Status to SignalR peers (Settings → Save Status). */
+export const publishChatUserStatus = async (
+  status = "Online",
+  statusMessage = ""
+) => {
+  const normalized =
+    String(status || "Online").trim() || "Online";
+  const message = String(statusMessage || "").trim();
+  setChatRuntimePrefs({ status: normalized, statusMessage: message });
+
+  const invokeOn = async (connection) => {
+    if (
+      connection &&
+      connection.state === signalR.HubConnectionState.Connected
+    ) {
+      await connection.invoke("SetUserStatus", normalized, message);
+    }
+  };
+
+  try {
+    // Prefer live connection — avoid re-entering ensureChatHubConnection during start.
+    if (chatHubConnection?.state === signalR.HubConnectionState.Connected) {
+      await invokeOn(chatHubConnection);
+      return;
+    }
+    const connection = await ensureChatHubConnection();
+    await invokeOn(connection);
+  } catch {
+    /* hub optional — API prefs still saved */
+  }
+};
+
+/** Snapshot of peer statuses from hub (userId → { status, statusMessage }). */
+export const getCachedChatUserStatuses = () => ({ ...lastUserStatuses });
 
 const bindChatHubHandlers = (connection) => {
   connection.off("UserOnline");
@@ -34,6 +614,10 @@ const bindChatHubHandlers = (connection) => {
   connection.off("ChatDeleted");
   connection.off("MessageReaction");
   connection.off("AnnouncementChanged");
+  connection.off("GroupCreated");
+  connection.off("GroupMemberAdminChanged");
+  connection.off("UserStatusChanged");
+  connection.off("UserStatuses");
 
   connection.on("UserOnline", (userId) => {
     notifyChatPresence("UserOnline", userId);
@@ -44,12 +628,27 @@ const bindChatHubHandlers = (connection) => {
   connection.on("OnlineUsers", (userIds) => {
     notifyChatPresence("OnlineUsers", userIds);
   });
+  connection.on("UserStatusChanged", (payload) => {
+    notifyChatPresence("UserStatusChanged", payload);
+  });
+  connection.on("UserStatuses", (payload) => {
+    notifyChatPresence("UserStatuses", payload);
+  });
   // Push after Send Message API saves (ChatController → ReceiveMessage)
   connection.on("ReceiveMessage", (payload) => {
     notifyChatPresence("ReceiveMessage", payload);
   });
   connection.on("ReceiveNotification", (payload) => {
-    notifyChatPresence("ReceiveNotification", payload);
+    // Settings → All / Browser / Notification ball with browser
+    Promise.resolve(ensureChatRuntimePrefsLoaded())
+      .catch(() => null)
+      .then(() => {
+        const showBell = isChatNotificationAllowed(payload);
+        const showBrowser = isChatBrowserNotificationAllowed(payload);
+        if (!showBell && !showBrowser) return;
+        if (showBell) notifyChatPresence("ReceiveNotification", payload);
+        if (showBrowser) maybeShowDesktopChatNotification(payload);
+      });
   });
   connection.on("MessageDelivered", (payload) => {
     notifyChatPresence("MessageDelivered", payload);
@@ -71,6 +670,12 @@ const bindChatHubHandlers = (connection) => {
   });
   connection.on("AnnouncementChanged", (payload) => {
     notifyChatPresence("AnnouncementChanged", payload);
+  });
+  connection.on("GroupCreated", (payload) => {
+    notifyChatPresence("GroupCreated", payload);
+  });
+  connection.on("GroupMemberAdminChanged", (payload) => {
+    notifyChatPresence("GroupMemberAdminChanged", payload);
   });
 
   connection.onreconnecting(() => {
@@ -129,8 +734,29 @@ export const ensureChatHubConnection = async () => {
 
   chatHubStartPromise = connection
     .start()
-    .then(() => {
+    .then(async () => {
       notifyChatPresence("ConnectionState", "connected");
+      try {
+        await ensureChatRuntimePrefsLoaded();
+      } catch {
+        /* prefs optional at connect */
+      }
+      // Re-publish Settings → My Status after reconnect (direct invoke — no ensure re-entry).
+      try {
+        const prefs = readChatRuntimePrefsRaw();
+        await connection.invoke(
+          "SetUserStatus",
+          prefs.status || "Online",
+          prefs.statusMessage || ""
+        );
+      } catch {
+        /* hub may be older build */
+      }
+      try {
+        await connection.invoke("RequestUserStatuses");
+      } catch {
+        /* hub may be older build */
+      }
       return connection;
     })
     .catch((error) => {
@@ -151,6 +777,25 @@ export const ensureChatHubConnection = async () => {
 export const subscribeChatPresence = (listener) => {
   if (typeof listener === "function") {
     chatPresenceListeners.add(listener);
+    // Replay cached presence immediately so Online/Offline updates without refresh
+    // when Messages mounts after layout already connected the hub.
+    try {
+      if (lastOnlineUserIds.length > 0) {
+        listener("OnlineUsers", [...lastOnlineUserIds]);
+      }
+      if (Object.keys(lastUserStatuses).length > 0) {
+        listener(
+          "UserStatuses",
+          Object.entries(lastUserStatuses).map(([userId, row]) => ({
+            userId,
+            status: row.status,
+            statusMessage: row.statusMessage,
+          }))
+        );
+      }
+    } catch {
+      // ignore listener errors
+    }
   }
   ensureChatHubConnection()
     .then(async (connection) => {
@@ -167,7 +812,7 @@ export const subscribeChatPresence = (listener) => {
         try {
           await connection.invoke("RequestOnlineUsers");
         } catch {
-          // Snapshot also arrives via OnConnectedAsync
+          // Snapshot also arrives via OnConnectedAsync / presence cache
         }
       }
     })
@@ -1246,6 +1891,44 @@ export const leaveChatGroup = async (groupId) => {
 };
 
 /**
+ * PUT /api/chat/groups/{groupId}/members/{targetUserId}/admin
+ * Body: { isAdmin: true | false } — WhatsApp-style multi-admin.
+ */
+export const setChatGroupMemberAdmin = async (
+  groupId,
+  targetUserId,
+  isAdmin = true
+) => {
+  const parsedGroup = Number(groupId);
+  const parsedUser = Number(targetUserId);
+  if (!Number.isFinite(parsedGroup) || parsedGroup <= 0) {
+    throw new Error("groupId is required.");
+  }
+  if (!Number.isFinite(parsedUser) || parsedUser <= 0) {
+    throw new Error("targetUserId is required.");
+  }
+
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const tenant = tenantQuery(ctx);
+
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_GROUPS}/${parsedGroup}/members/${parsedUser}/admin`,
+      {
+        isAdmin: Boolean(isAdmin),
+        orgId: tenant.orgId,
+        appId: tenant.appId,
+        fiscalYearId: tenant.fiscalYearId,
+      },
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/**
  * POST /api/chat/messages/{messageId}/forward
  * Inserts a NEW tab_messages row with forwarded_from_message_id + forwarded_by.
  */
@@ -1434,6 +2117,33 @@ export const toggleChatMessageReaction = async (messageId, reactionCode) => {
     return await axios.post(
       `${base}${url.CHAT_MESSAGE_REACTION}/${parsedMessageId}/reaction?${query}`,
       { reactionCode: code },
+      { headers: chatAuthHeaders(ctx) }
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/**
+ * GET /api/chat/messages/{messageId}/reactions
+ * WhatsApp-style: who reacted (tab_message_reactions).
+ */
+export const getChatMessageReactions = async (messageId) => {
+  const parsedMessageId = Number(messageId);
+  if (!Number.isFinite(parsedMessageId) || parsedMessageId <= 0) {
+    throw new Error("messageId is required.");
+  }
+
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const tenant = tenantQuery(ctx);
+  const query = Object.keys(tenant)
+    .map((key) => `${key}=${encodeURIComponent(tenant[key])}`)
+    .join("&");
+
+  try {
+    return await axios.get(
+      `${base}${url.CHAT_MESSAGES}/${parsedMessageId}/reactions?${query}`,
       { headers: chatAuthHeaders(ctx) }
     );
   } catch (error) {
@@ -2490,5 +3200,206 @@ export const getUnreadAnnouncementCount = async () => {
     return Number(response?.unreadCount ?? response?.UnreadCount ?? 0);
   } catch (error) {
     rethrowChatError(error);
+  }
+};
+
+// ─── Settings (Chat_Api /api/settings) ───────────────────────────────────────
+
+/** GET /api/settings */
+export const getChatSettings = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.get(`${base}${url.CHAT_SETTINGS}`, chatTenantRequestConfig(ctx));
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/settings/profile?orgId&appId&fiscalYearId
+ * Body: { fullName, phone, photoUrl, language, dateFormat }
+ */
+export const updateChatSettingsProfile = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const body = {
+    fullName: String(data?.fullName ?? "").trim(),
+    phone: data?.phone == null || String(data.phone).trim() === ""
+      ? null
+      : String(data.phone).trim(),
+    photoUrl: data?.photoUrl == null || String(data.photoUrl).trim() === ""
+      ? null
+      : String(data.photoUrl).trim(),
+    language: String(data?.language ?? "").trim(),
+    dateFormat: String(data?.dateFormat ?? "").trim(),
+  };
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_SETTINGS_PROFILE}`,
+      body,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/settings/status */
+export const updateChatSettingsStatus = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_SETTINGS_STATUS}`,
+      data,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/settings/message-defaults */
+export const updateChatSettingsMessageDefaults = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_SETTINGS_MESSAGE_DEFAULTS}`,
+      data,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/settings/notifications */
+export const updateChatSettingsNotifications = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_SETTINGS_NOTIFICATIONS}`,
+      data,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/settings/privacy */
+export const updateChatSettingsPrivacy = async (data) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.put(
+      `${base}${url.CHAT_SETTINGS_PRIVACY}`,
+      data,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/settings/storage */
+export const getChatSettingsStorage = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.get(
+      `${base}${url.CHAT_SETTINGS_STORAGE}`,
+      chatTenantRequestConfig(ctx)
+    );
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/settings/integrations */
+export const getChatSettingsIntegrations = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_SETTINGS_INTEGRATIONS}`,
+      chatTenantRequestConfig(ctx)
+    );
+    return Array.isArray(response) ? response : Array.isArray(response?.data) ? response.data : [];
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+// ─── Chat date format preference (Settings → Messages date chips) ─────────────
+
+export const DEFAULT_CHAT_DATE_FORMAT = "DD MMM YYYY";
+const CHAT_DATE_FORMAT_KEY = "chatDateFormat";
+
+const MONTH_SHORT = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** Persist date format from Settings (sessionStorage). */
+export const setChatDateFormat = (format) => {
+  const value = String(format || "").trim() || DEFAULT_CHAT_DATE_FORMAT;
+  try {
+    sessionStorage.setItem(CHAT_DATE_FORMAT_KEY, value);
+  } catch {
+    /* ignore */
+  }
+  try {
+    window.dispatchEvent(
+      new CustomEvent("chat-date-format-updated", { detail: { dateFormat: value } })
+    );
+  } catch {
+    /* ignore */
+  }
+  return value;
+};
+
+/** Read saved date format (fallback DD MMM YYYY). */
+export const getChatDateFormat = () => {
+  try {
+    const saved = String(sessionStorage.getItem(CHAT_DATE_FORMAT_KEY) || "").trim();
+    if (saved) return saved;
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_CHAT_DATE_FORMAT;
+};
+
+/**
+ * Format a date using Settings preference.
+ * Supported: DD MMM YYYY | MM/DD/YYYY | DD/MM/YYYY | YYYY-MM-DD
+ */
+export const formatDateByPreference = (value, format = getChatDateFormat()) => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const dd = String(date.getDate()).padStart(2, "0");
+  const d = String(date.getDate());
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const m = String(date.getMonth() + 1);
+  const yyyy = String(date.getFullYear());
+  const mon = MONTH_SHORT[date.getMonth()];
+  const pattern = String(format || DEFAULT_CHAT_DATE_FORMAT).trim();
+
+  switch (pattern) {
+    case "MM/DD/YYYY":
+      return `${mm}/${dd}/${yyyy}`;
+    case "DD/MM/YYYY":
+      return `${dd}/${mm}/${yyyy}`;
+    case "YYYY-MM-DD":
+      return `${yyyy}-${mm}-${dd}`;
+    case "DD MMM YYYY":
+    default:
+      // Keep WhatsApp-like short day without leading zero when matching DD MMM YYYY
+      if (pattern === "DD MMM YYYY") return `${d} ${mon} ${yyyy}`;
+      return `${d} ${mon} ${yyyy}`;
   }
 };

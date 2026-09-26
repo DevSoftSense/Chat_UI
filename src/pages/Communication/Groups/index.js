@@ -33,6 +33,7 @@ import FeatherIcon from "feather-icons-react";
 import Picker from "emoji-picker-react";
 import { getCommAvatarSrc } from "../components/CommAvatar";
 import MessageInfo, { useGroupMessageInfo } from "./MessageInfo";
+import { MessageReactionDetails } from "../Messages/MessageActions";
 import {
   attachMenuItems,
   classifyAttachment,
@@ -50,6 +51,7 @@ import {
   leaveGroup,
   leaveGroupHub,
   removeGroupMember,
+  setGroupMemberAdmin,
   updateGroup,
 } from "../../../helpers/groupsApi";
 import {
@@ -74,6 +76,8 @@ import {
   setGroupsUnreadTotal,
   sumGroupListUnread,
   DEFAULT_CHAT_MAX_FILE_SIZE_MB,
+  getChatDateFormat,
+  formatDateByPreference,
 } from "../../../helpers/softoncloud_auth_helper";
 import "../Messages/messages.scss";
 
@@ -294,6 +298,65 @@ const formatMsgTime = (value) => {
   }
 };
 
+const MSG_STATUS = {
+  SENT: "sent",
+  DELIVERED: "delivered",
+  READ: "read",
+};
+
+const resolveGroupOutgoingStatus = (msg) => {
+  if (!msg || msg.from !== "me") return null;
+  if (msg.status === MSG_STATUS.READ || msg.read || msg.readAt) return MSG_STATUS.READ;
+  if (msg.status === MSG_STATUS.DELIVERED) return MSG_STATUS.DELIVERED;
+  return MSG_STATUS.SENT;
+};
+
+/** WhatsApp-style day label — uses Settings date format */
+const formatGroupChatDayLabel = (value, dateFormat = getChatDateFormat()) => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const startOfDay = (d) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  };
+  const today = startOfDay(new Date());
+  const msgDay = startOfDay(date);
+  const diffDays = Math.round((today - msgDay) / 86400000);
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return formatDateByPreference(date, dateFormat);
+};
+
+const getGroupMessageDayKey = (msg) => {
+  const raw = msg?.sentAt || msg?.raw?.sentAt || msg?.raw?.SentAt || msg?.raw?.createdAt;
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+};
+
+const withGroupDateSeparators = (list, dateFormat = getChatDateFormat()) => {
+  const rows = [];
+  let lastKey = "";
+  (list || []).forEach((msg) => {
+    const key = getGroupMessageDayKey(msg);
+    if (key && key !== lastKey) {
+      rows.push({
+        id: `day-${key}`,
+        isDateSeparator: true,
+        label: formatGroupChatDayLabel(msg.sentAt, dateFormat),
+      });
+      lastKey = key;
+    }
+    rows.push(msg);
+  });
+  return rows;
+};
+
 const initialsFromName = (name) => {
   const parts = String(name || "")
     .trim()
@@ -509,6 +572,7 @@ const Groups = () => {
     () => new Set()
   );
   const [reactionPickerMsg, setReactionPickerMsg] = useState(null);
+  const [reactionDetailsMsg, setReactionDetailsMsg] = useState(null);
   const [reactionPickerPos, setReactionPickerPos] = useState(null);
   const [onlineUserIds, setOnlineUserIds] = useState(() => new Set());
   const [actionToast, setActionToast] = useState("");
@@ -536,6 +600,8 @@ const Groups = () => {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState("");
   const [messages, setMessages] = useState([]);
+  const [focusMessageId, setFocusMessageId] = useState(null);
+  const [dateFormat, setDateFormat] = useState(() => getChatDateFormat());
   const [sending, setSending] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -868,6 +934,8 @@ const Groups = () => {
         time: formatMsgTime(sentAt),
         sentAt,
         readAt,
+        read: Boolean(readAt),
+        status: readAt ? MSG_STATUS.READ : MSG_STATUS.SENT,
         type: attachmentPaths.length
           ? "file"
           : linkUrls.length
@@ -917,7 +985,19 @@ const Groups = () => {
       setMessagesError("");
       try {
         const rows = await getChatMessages(chatId);
-        setMessages(attachReplyPreviews((rows || []).map(mapApiMessage)));
+        const mapped = attachReplyPreviews((rows || []).map(mapApiMessage));
+        setMessages(mapped);
+        // Ack delivery for inbound messages (Message Info: Delivered to).
+        const myId = String(me?.userId ?? "");
+        mapped.forEach((m) => {
+          if (!m?.id || m.from === "me") return;
+          const senderId = String(
+            m.senderUserId ?? m.raw?.senderUserId ?? m.raw?.SenderUserId ?? ""
+          );
+          if (senderId && senderId !== myId) {
+            ackChatMessageDelivered(m.id, senderId, chatId);
+          }
+        });
         // Persist group receipts so Message Info can show Read by / Delivered to.
         try {
           await markChatMessagesRead(chatId);
@@ -939,7 +1019,7 @@ const Groups = () => {
         setMessagesLoading(false);
       }
     },
-    [mapApiMessage, showToast]
+    [mapApiMessage, showToast, me?.userId]
   );
 
   // Keep sidebar Groups red badge in sync with list green counts.
@@ -984,6 +1064,53 @@ const Groups = () => {
     });
     return () => unsubscribe?.();
   }, []);
+
+  // Live: another user created a group and added me → refresh list immediately.
+  useEffect(() => {
+    const unsubscribe = subscribeChatPresence((event, payload) => {
+      if (event === "GroupCreated") {
+        loadGroups({ keepSelected: true });
+        return;
+      }
+      if (event === "GroupMemberAdminChanged") {
+        const gid = payload?.groupId ?? payload?.GroupId;
+        // Update list Admin badge without full page refresh.
+        loadGroups({ keepSelected: true });
+        const currentId = activeGroupRef.current?.groupId;
+        if (
+          gid != null &&
+          currentId != null &&
+          String(gid) === String(currentId)
+        ) {
+          loadGroupDetails(currentId);
+        }
+        return;
+      }
+      if (event !== "ReceiveNotification" || !payload) return;
+      const type = String(
+        payload.notificationType ?? payload.NotificationType ?? ""
+      ).toUpperCase();
+      const refType = String(
+        payload.referenceType ?? payload.ReferenceType ?? ""
+      );
+      const groupId = payload.groupId ?? payload.GroupId;
+      const isGroupInvite =
+        type === "GROUP" ||
+        /^GROUP:\d+$/i.test(refType.trim()) ||
+        (groupId != null && groupId !== "");
+      if (isGroupInvite && type === "GROUP") {
+        loadGroups({ keepSelected: true });
+        if (
+          groupId != null &&
+          activeGroupRef.current?.groupId != null &&
+          String(groupId) === String(activeGroupRef.current.groupId)
+        ) {
+          loadGroupDetails(activeGroupRef.current.groupId);
+        }
+      }
+    });
+    return () => unsubscribe?.();
+  }, [loadGroups, loadGroupDetails]);
 
   useEffect(() => {
     activeGroupRef.current = activeGroup;
@@ -1036,22 +1163,95 @@ const Groups = () => {
       const current = activeGroupRef.current;
       if (!current?.groupId) return;
 
+      if (event === "MessageDelivered") {
+        if (!payload || me?.userId == null) return;
+        const messageId = String(
+          payload.messageId ?? payload.MessageId ?? ""
+        );
+        if (!messageId) return;
+        const payloadChatId = payload.chatId ?? payload.ChatId;
+        if (
+          payloadChatId != null &&
+          current.chatId != null &&
+          String(payloadChatId) !== String(current.chatId)
+        ) {
+          return;
+        }
+        setMessages((prev) => {
+          let changed = false;
+          const next = prev.map((m) => {
+            if (String(m.id) !== messageId || m.from !== "me") return m;
+            if (
+              m.status === MSG_STATUS.READ ||
+              m.status === MSG_STATUS.DELIVERED
+            ) {
+              return m;
+            }
+            changed = true;
+            return { ...m, status: MSG_STATUS.DELIVERED };
+          });
+          return changed ? next : prev;
+        });
+        return;
+      }
+
+      if (event === "MessagesRead") {
+        if (!payload || me?.userId == null) return;
+        const readerId = String(
+          payload.readerUserId ?? payload.ReaderUserId ?? ""
+        );
+        if (readerId && readerId === String(me.userId)) return;
+        const messageIds = (
+          payload.messageIds ??
+          payload.MessageIds ??
+          []
+        ).map((id) => String(id));
+        const payloadChatId = payload.chatId ?? payload.ChatId;
+        if (
+          payloadChatId != null &&
+          current.chatId != null &&
+          String(payloadChatId) !== String(current.chatId) &&
+          messageIds.length === 0
+        ) {
+          return;
+        }
+        const readAt =
+          payload.readAt ?? payload.ReadAt ?? new Date().toISOString();
+        setMessages((prev) => {
+          let changed = false;
+          const next = prev.map((m) => {
+            if (m.from !== "me") return m;
+            if (messageIds.length && !messageIds.includes(String(m.id))) {
+              return m;
+            }
+            if (
+              !messageIds.length &&
+              payloadChatId != null &&
+              current.chatId != null &&
+              String(payloadChatId) !== String(current.chatId)
+            ) {
+              return m;
+            }
+            if (m.status === MSG_STATUS.READ && m.readAt) return m;
+            changed = true;
+            return {
+              ...m,
+              status: MSG_STATUS.READ,
+              read: true,
+              readAt,
+            };
+          });
+          return changed ? next : prev;
+        });
+        return;
+      }
+
       if (event === "MessageReaction") {
         if (!payload || me?.userId == null) return;
         const messageId = String(
           payload.messageId ?? payload.MessageId ?? ""
         );
         if (!messageId) return;
-        const payloadGroupId = payload.groupId ?? payload.GroupId;
-        const payloadChatId = payload.chatId ?? payload.ChatId;
-        const matchesGroup =
-          payloadGroupId != null &&
-          String(payloadGroupId) === String(current.groupId);
-        const matchesChat =
-          current.chatId != null &&
-          String(payloadChatId) === String(current.chatId);
-        if (!matchesGroup && !matchesChat) return;
-
         const reactorId = String(
           payload.reactorUserId ?? payload.ReactorUserId ?? ""
         );
@@ -1064,10 +1264,14 @@ const Groups = () => {
         const reactionEmoji =
           payload.reaction ??
           payload.Reaction ??
+          payload.reactionEmoji ??
+          payload.ReactionEmoji ??
           (reactionCode ? reactionCodeToEmoji(reactionCode) : null);
         const isMine = reactorId === String(me.userId);
 
         setMessages((prev) => {
+          if (!prev.some((m) => String(m.id) === messageId)) return prev;
+
           let needsReload = false;
           const next = prev.map((m) => {
             if (String(m.id) !== messageId) return m;
@@ -1077,13 +1281,16 @@ const Groups = () => {
                 myEmoji: reactionEmoji,
               });
             }
-            if (!reactionCode) {
+            if (!reactionCode && !reactionEmoji) {
               needsReload = true;
-              return m;
+              return patchMessageReactions(m, {
+                peerReactionCode: null,
+                peerReaction: null,
+              });
             }
             return patchMessageReactions(m, {
               peerReactionCode: reactionCode,
-              peerReaction: joinReactionEmojis(m.peerReaction, reactionEmoji),
+              peerReaction: reactionEmoji || m.peerReaction,
             });
           });
           if (needsReload && current.chatId) {
@@ -1135,8 +1342,38 @@ const Groups = () => {
   ]);
 
   // Live group messages for list green badges + open thread (user hub + group hub).
+  // Reaction: toast via SignalR MessageReaction (bell still gets ReceiveNotification).
   useEffect(() => {
     const unsubscribe = subscribeChatPresence(async (event, payload) => {
+      if (event === "MessageReaction" && payload) {
+        const reactorId = String(
+          payload.reactorUserId ?? payload.ReactorUserId ?? ""
+        );
+        const myId = String(me?.userId ?? "");
+        const senderOfMessage = String(
+          payload.senderUserId ?? payload.SenderUserId ?? ""
+        );
+        const reactionCodeRaw =
+          payload.reactionCode ?? payload.ReactionCode ?? null;
+        const hasReaction =
+          reactionCodeRaw != null && String(reactionCodeRaw).trim() !== "";
+        const reactionEmoji =
+          payload.reaction ??
+          payload.Reaction ??
+          payload.reactionEmoji ??
+          payload.ReactionEmoji ??
+          "👍";
+        if (
+          hasReaction &&
+          myId &&
+          reactorId !== myId &&
+          senderOfMessage === myId
+        ) {
+          showToast(`${reactionEmoji} reacted to your message`);
+        }
+        return;
+      }
+
       if (event !== "ReceiveMessage" || !payload) return;
 
       const payloadGroupId = payload.groupId ?? payload.GroupId;
@@ -1218,7 +1455,7 @@ const Groups = () => {
     });
 
     return unsubscribe;
-  }, [mapApiMessage]);
+  }, [mapApiMessage, me?.userId, showToast]);
 
   const memberPresenceStatus = useCallback(
     (member) => {
@@ -1511,7 +1748,7 @@ const Groups = () => {
     }
   };
 
-  // Open group from bell notification (navigate state / session).
+  // Open group from bell / desktop notification (navigate state / session).
   useEffect(() => {
     const openGroupId =
       location.state?.openGroupId ??
@@ -1524,23 +1761,59 @@ const Groups = () => {
           return null;
         }
       })();
+    const focusFromNav =
+      location.state?.focusMessageId ??
+      (() => {
+        try {
+          const raw = sessionStorage.getItem("chatUiState");
+          const parsed = raw ? JSON.parse(raw) : null;
+          return parsed?.focusMessageId || null;
+        } catch {
+          return null;
+        }
+      })();
     if (openGroupId == null || !groupList.length) return;
     const target = groupList.find(
       (g) => String(g.groupId) === String(openGroupId)
     );
     if (!target) return;
     openGroup(target);
+    if (focusFromNav != null && focusFromNav !== "") {
+      setFocusMessageId(String(focusFromNav));
+    }
     try {
       const prev = JSON.parse(sessionStorage.getItem("chatUiState") || "null") || {};
-      const { openGroupId: _omit, ...rest } = prev;
+      const { openGroupId: _omit, focusMessageId: _focus, ...rest } = prev;
       sessionStorage.setItem("chatUiState", JSON.stringify(rest));
     } catch {
       // ignore
     }
-    if (location.state?.openGroupId != null) {
+    if (
+      location.state?.openGroupId != null ||
+      location.state?.focusMessageId != null
+    ) {
       navigate(location.pathname, { replace: true, state: {} });
     }
-  }, [groupList, location.state?.openGroupId]);
+  }, [groupList, location.state?.openGroupId, location.state?.focusMessageId]);
+
+  // Scroll to message after desktop / bell notification redirect
+  useEffect(() => {
+    if (!focusMessageId || messagesLoading) return;
+    const hasTarget = messages.some(
+      (m) => String(m.id) === String(focusMessageId)
+    );
+    if (!hasTarget) return;
+    const timer = window.setTimeout(() => {
+      const el = document.getElementById(`group-msg-${focusMessageId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("is-focused-msg");
+        window.setTimeout(() => el.classList.remove("is-focused-msg"), 2000);
+      }
+      setFocusMessageId(null);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [focusMessageId, messagesLoading, messages]);
 
   const backToList = () => {
     if (userChatShow.current) {
@@ -1775,6 +2048,44 @@ const Groups = () => {
       await loadGroupDetails(activeGroup.groupId);
     } catch (error) {
       showToast(apiErrorMessage(error, "Unable to remove member."));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handleSetMemberAdmin = async (targetUserId, makeAdmin) => {
+    if (!activeGroup?.groupId || busyAction) return;
+    const isSelf = String(targetUserId) === String(me?.userId ?? "");
+    const label = makeAdmin ? "Make group admin" : "Dismiss as admin";
+    if (
+      !window.confirm(
+        makeAdmin
+          ? "Make this member a group admin?"
+          : isSelf
+            ? "Leave admin role? (You will stay in the group as a member.)"
+            : "Dismiss this member as admin?"
+      )
+    ) {
+      return;
+    }
+    setBusyAction("admin");
+    try {
+      await setGroupMemberAdmin(activeGroup.groupId, targetUserId, makeAdmin);
+      showToast(
+        makeAdmin
+          ? "Member is now an admin"
+          : isSelf
+            ? "You are no longer an admin"
+            : "Admin role removed"
+      );
+      await loadGroupDetails(activeGroup.groupId);
+      await loadGroups({ keepSelected: true });
+    } catch (error) {
+      const raw = apiErrorMessage(error, `Unable to ${label.toLowerCase()}.`);
+      const friendly = /last active admin/i.test(String(raw || ""))
+        ? "Cannot dismiss the last admin. Make another member admin first."
+        : raw;
+      showToast(friendly);
     } finally {
       setBusyAction("");
     }
@@ -2581,10 +2892,50 @@ const Groups = () => {
     }
   };
 
-  const visibleMessages = useMemo(
-    () => messages.filter((msg) => !deletedForMeIds.has(String(msg.id))),
-    [messages, deletedForMeIds]
-  );
+  const visibleMessages = useMemo(() => {
+    const list = messages.filter((msg) => !deletedForMeIds.has(String(msg.id)));
+    return withGroupDateSeparators(list, dateFormat);
+  }, [messages, deletedForMeIds, dateFormat]);
+
+  const renderGroupMessageTicks = (msg) => {
+    if (msg.from !== "me") return null;
+    const status = resolveGroupOutgoingStatus(msg);
+    if (status === MSG_STATUS.READ) {
+      return (
+        <i
+          className="ri-check-double-line ticks ticks-read"
+          title="Read"
+          aria-label="Read"
+        />
+      );
+    }
+    if (status === MSG_STATUS.DELIVERED) {
+      return (
+        <i
+          className="ri-check-double-line ticks ticks-delivered"
+          title="Delivered"
+          aria-label="Delivered"
+        />
+      );
+    }
+    return (
+      <i
+        className="ri-check-line ticks ticks-sent"
+        title="Sent"
+        aria-label="Sent"
+      />
+    );
+  };
+
+  useEffect(() => {
+    const onDateFormatUpdated = (event) => {
+      const next = event?.detail?.dateFormat || getChatDateFormat();
+      setDateFormat(next);
+    };
+    window.addEventListener("chat-date-format-updated", onDateFormatUpdated);
+    return () =>
+      window.removeEventListener("chat-date-format-updated", onDateFormatUpdated);
+  }, []);
 
   const onKeyPress = (e) => {
     if (e.key === "Enter") {
@@ -2946,10 +3297,12 @@ const Groups = () => {
                                 color="soft-success"
                                 disabled={!selectedMessageIds.length}
                                 onClick={() => {
-                                  const first = visibleMessages.find((msg) =>
-                                    selectedMessageIds
-                                      .map(String)
-                                      .includes(String(msg.id))
+                                  const first = visibleMessages.find(
+                                    (msg) =>
+                                      !msg.isDateSeparator &&
+                                      selectedMessageIds
+                                        .map(String)
+                                        .includes(String(msg.id))
                                   );
                                   if (!first) return;
                                   openForwardModal(first);
@@ -2964,6 +3317,7 @@ const Groups = () => {
                                 onClick={() => {
                                   const selected = visibleMessages.filter(
                                     (msg) =>
+                                      !msg.isDateSeparator &&
                                       selectedMessageIds
                                         .map(String)
                                         .includes(String(msg.id))
@@ -3025,7 +3379,8 @@ const Groups = () => {
                                   Loading messages...
                                 </div>
                               ) : null}
-                              {!messagesLoading && !visibleMessages.length ? (
+                              {!messagesLoading &&
+                              !visibleMessages.some((m) => !m.isDateSeparator) ? (
                                 <div className="text-center text-muted py-4 fs-13">
                                   No messages yet.
                                 </div>
@@ -3035,6 +3390,16 @@ const Groups = () => {
                                 id="users-conversation"
                               >
                                 {visibleMessages.map((msg) => {
+                                  if (msg.isDateSeparator) {
+                                    return (
+                                      <li
+                                        key={msg.id}
+                                        className="chat-list chat-day-separator"
+                                      >
+                                        <div className="chat-day-chip">{msg.label}</div>
+                                      </li>
+                                    );
+                                  }
                                   const isMe = msg.from === "me";
                                   const isFile = msg.type === "file" || msg.attachKind;
                                   const isSelected = selectedMessageIds
@@ -3430,19 +3795,11 @@ const Groups = () => {
                                             <button
                                               type="button"
                                               className="comm-msg-reaction"
-                                              title={
-                                                msg.reactionCode
-                                                  ? "Remove your reaction"
-                                                  : "Reactions"
-                                              }
+                                              title="See who reacted"
                                               onClick={(e) => {
                                                 e.preventDefault();
                                                 e.stopPropagation();
-                                                if (!msg.reactionCode) return;
-                                                toggleGroupReaction(
-                                                  msg,
-                                                  msg.reactionCode
-                                                );
+                                                setReactionDetailsMsg(msg);
                                               }}
                                             >
                                               {msg.reaction}
@@ -3453,11 +3810,11 @@ const Groups = () => {
                                             <small className="text-muted time">
                                               {msg.time}
                                             </small>
-                                            {isMe && (
-                                              <span className="check-message-icon ms-1">
-                                                <i className="ri-check-double-line align-bottom ticks ticks-read"></i>
+                                            {isMe ? (
+                                              <span className="text-success check-message-icon">
+                                                {renderGroupMessageTicks(msg)}
                                               </span>
-                                            )}
+                                            ) : null}
                                           </div>
                                         </div>
                                       </div>
@@ -3633,6 +3990,66 @@ const Groups = () => {
         </Container>
       </div>
 
+      <MessageReactionDetails
+        isOpen={Boolean(reactionDetailsMsg?.id)}
+        messageId={
+          reactionDetailsMsg?.raw?.messageId ??
+          reactionDetailsMsg?.raw?.MessageId ??
+          reactionDetailsMsg?.id
+        }
+        message={reactionDetailsMsg}
+        meUserId={me?.userId}
+        peerUserId={
+          reactionDetailsMsg?.senderUserId &&
+          String(reactionDetailsMsg.senderUserId) !== String(me?.userId)
+            ? reactionDetailsMsg.senderUserId
+            : null
+        }
+        resolveUser={(userId) => {
+          const id = String(userId);
+          if (id === String(me?.userId ?? "")) {
+            const self = mergedMembers.find((x) => x.isSelf);
+            return {
+              name: "You",
+              email: me?.email || self?.email,
+              avatarSrc:
+                self?.avatarSrc ||
+                resolveUserAvatarUrl(me?.userId, me?.profileImage),
+            };
+          }
+          const m = mergedMembers.find((x) => String(x.userId) === id);
+          if (m) {
+            return {
+              name: m.name,
+              email: m.email,
+              avatarSrc: m.avatarSrc,
+            };
+          }
+          const profile = userById.get(id);
+          if (profile) {
+            return {
+              name: profile.name || profile.email,
+              email: profile.email,
+              avatarSrc:
+                profile.avatarSrc ||
+                resolveUserAvatarUrl(userId, profile.profileImage),
+            };
+          }
+          return {
+            name: null,
+            email: null,
+            avatarSrc: resolveUserAvatarUrl(userId, null),
+          };
+        }}
+        onClose={() => setReactionDetailsMsg(null)}
+        onRemoveMine={(code) => {
+          if (reactionDetailsMsg) {
+            toggleGroupReaction(reactionDetailsMsg, code);
+          }
+          setReactionDetailsMsg(null);
+        }}
+      />
+
       {actionToast ? (
         <div className="alert alert-success comm-action-toast shadow" role="status">
           {actionToast}
@@ -3721,17 +4138,61 @@ const Groups = () => {
                     {m.phone ? (
                       <span className="comm-gi-member-phone">{m.phone}</span>
                     ) : null}
-                    {isCurrentAdmin && !m.isSelf ? (
-                      <button
-                        type="button"
-                        className="btn btn-ghost-danger btn-icon btn-sm"
-                        title="Remove member"
-                        disabled={busyAction === "remove"}
-                        onClick={() => handleRemoveMember(m.userId)}
-                      >
-                        <i className="ri-user-unfollow-line"></i>
-                      </button>
-                    ) : null}
+                    {(() => {
+                      const adminCount = mergedMembers.filter((x) => x.isAdmin).length;
+                      const canDismissSelf =
+                        m.isSelf && m.isAdmin && adminCount > 1;
+                      const showOtherAdminMenu = isCurrentAdmin && !m.isSelf;
+                      if (!showOtherAdminMenu && !canDismissSelf) return null;
+                      return (
+                      <UncontrolledDropdown className="comm-gi-member-actions">
+                        <DropdownToggle
+                          tag="button"
+                          className="btn btn-ghost-secondary btn-icon btn-sm"
+                          title="Member options"
+                          disabled={busyAction === "remove" || busyAction === "admin"}
+                        >
+                          <i className="ri-more-2-fill"></i>
+                        </DropdownToggle>
+                        <DropdownMenu end>
+                          {m.isSelf ? (
+                            <DropdownItem
+                              onClick={() => handleSetMemberAdmin(m.userId, false)}
+                            >
+                              <i className="ri-shield-user-line me-2"></i>
+                              Dismiss as admin
+                            </DropdownItem>
+                          ) : m.isAdmin ? (
+                            <DropdownItem
+                              onClick={() => handleSetMemberAdmin(m.userId, false)}
+                            >
+                              <i className="ri-shield-user-line me-2"></i>
+                              Dismiss as admin
+                            </DropdownItem>
+                          ) : (
+                            <DropdownItem
+                              onClick={() => handleSetMemberAdmin(m.userId, true)}
+                            >
+                              <i className="ri-shield-check-line me-2"></i>
+                              Make group admin
+                            </DropdownItem>
+                          )}
+                          {!m.isSelf ? (
+                            <>
+                              <DropdownItem divider />
+                              <DropdownItem
+                                className="text-danger"
+                                onClick={() => handleRemoveMember(m.userId)}
+                              >
+                                <i className="ri-user-unfollow-line me-2"></i>
+                                Remove member
+                              </DropdownItem>
+                            </>
+                          ) : null}
+                        </DropdownMenu>
+                      </UncontrolledDropdown>
+                      );
+                    })()}
                   </div>
                 ))}
                 {!filteredInfoMembers.length && !detailsLoading ? (

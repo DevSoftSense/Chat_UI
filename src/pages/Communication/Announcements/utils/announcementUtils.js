@@ -31,6 +31,15 @@ export const formatAnnouncementDate = (value) => {
   }
 };
 
+/** Convert ISO/UTC expiry to datetime-local value (local wall clock). */
+export const toDatetimeLocalValue = (value) => {
+  if (!value) return "";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 export const previewText = (text, max = 160) => {
   const raw = String(text || "").trim();
   if (raw.length <= max) return raw;

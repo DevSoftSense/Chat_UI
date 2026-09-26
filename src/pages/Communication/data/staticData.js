@@ -14,7 +14,6 @@ export const navItems = [
   { id: "announcements", label: "Announcements", icon: "ri-megaphone-line", path: "/communication/announcements", badge: null },
   { id: "search", label: "Search", icon: "ri-search-line", path: "/communication/inbox", badge: null },
   { id: "archive", label: "Archive", icon: "ri-archive-line", path: "/communication/inbox", badge: null },
-  { id: "management", label: "Management Dashboard", icon: "ri-bar-chart-box-line", path: "/communication/management", badge: null },
   { id: "settings", label: "Settings", icon: "ri-settings-3-line", path: "/communication/settings", badge: null },
 ];
 

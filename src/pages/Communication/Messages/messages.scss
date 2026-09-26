@@ -94,6 +94,34 @@
   padding-right: 0.25rem;
 }
 
+/* WhatsApp-style date separator */
+.chat-conversation-list > li.chat-day-separator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 0 14px;
+  list-style: none;
+}
+
+.chat-conversation-list > li.chat-day-separator .chat-day-chip {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #54656f;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+  user-select: none;
+}
+
+[data-layout-mode="dark"] .chat-conversation-list > li.chat-day-separator .chat-day-chip,
+html[data-bs-theme="dark"] .chat-conversation-list > li.chat-day-separator .chat-day-chip {
+  background: #182229;
+  color: #8696a0;
+  box-shadow: none;
+}
+
 .user-chat .chat-conversation-scroll .chat-list.right .conversation-list {
   margin-right: 0.15rem;
 }
@@ -1113,4 +1141,167 @@
 .comm-mi-empty {
   font-size: 0.82rem;
   color: var(--vz-secondary-color, #878a99);
+}
+
+/* ——— WhatsApp-style reaction details (DP + name) ——— */
+.comm-wa-reaction-modal .modal-dialog {
+  max-width: 320px;
+}
+
+.comm-wa-reaction-sheet {
+  border-radius: 14px !important;
+  overflow: hidden;
+  background: #fff !important;
+  box-shadow: 0 8px 28px rgba(11, 20, 26, 0.22);
+  border: none;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-sheet,
+[data-layout-mode="dark"] .comm-wa-reaction-sheet {
+  background: #233138 !important;
+}
+
+.comm-wa-reaction-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 14px 10px;
+}
+
+.comm-wa-reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #f0f2f5;
+  color: #111b21;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-pill,
+[data-layout-mode="dark"] .comm-wa-reaction-pill {
+  background: #182229;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #e9edef;
+}
+
+.comm-wa-reaction-pill.active {
+  background: #d1f4cc;
+  border-color: transparent;
+  color: #111b21;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-pill.active,
+[data-layout-mode="dark"] .comm-wa-reaction-pill.active {
+  background: #005c4b;
+  color: #e9edef;
+}
+
+.comm-wa-reaction-pill-emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.comm-wa-reaction-pill-count {
+  font-size: 13px;
+}
+
+.comm-wa-reaction-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 0 4px;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-divider,
+[data-layout-mode="dark"] .comm-wa-reaction-divider {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.comm-wa-reaction-scroll {
+  max-height: 280px;
+  padding: 0 0 8px;
+}
+
+.comm-wa-reaction-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  cursor: default;
+}
+
+.comm-wa-reaction-row.is-mine {
+  cursor: pointer;
+}
+
+.comm-wa-reaction-row.is-mine:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-row.is-mine:hover,
+[data-layout-mode="dark"] .comm-wa-reaction-row.is-mine:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.comm-wa-reaction-row:disabled {
+  opacity: 1;
+}
+
+.comm-wa-reaction-dp {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #e9edef;
+}
+
+.comm-wa-reaction-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.comm-wa-reaction-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111b21;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-name,
+[data-layout-mode="dark"] .comm-wa-reaction-name {
+  color: #e9edef;
+}
+
+.comm-wa-reaction-hint {
+  font-size: 12.5px;
+  color: #667781;
+  line-height: 1.2;
+}
+
+[data-bs-theme="dark"] .comm-wa-reaction-hint,
+[data-layout-mode="dark"] .comm-wa-reaction-hint {
+  color: #8696a0;
+}
+
+.comm-wa-reaction-emoji {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
 }

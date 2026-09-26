@@ -8,6 +8,7 @@ export {
   updateChatGroup as updateGroup,
   addChatGroupMembers as addGroupMembers,
   removeChatGroupMember as removeGroupMember,
+  setChatGroupMemberAdmin as setGroupMemberAdmin,
   leaveChatGroup as leaveGroup,
   joinChatGroupHub as joinGroupHub,
   leaveChatGroupHub as leaveGroupHub,

@@ -44,6 +44,7 @@ import {
   patchMessageReactions,
   readStoredReactions,
   writeStoredReactions,
+  MessageReactionDetails,
 } from "./MessageActions";
 import {
   attachMenuItems,
@@ -88,6 +89,8 @@ import {
   resolveUserAvatarUrl,
   setMessagesUnreadTotal,
   sumChatListUnread,
+  getChatDateFormat,
+  formatDateByPreference,
 } from "../../../helpers/softoncloud_auth_helper";
 import "./messages.scss";
 
@@ -280,6 +283,57 @@ const formatMessageTime = (value) => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+/** WhatsApp-style day label: Today / Yesterday / Settings date format */
+const formatChatDayLabel = (value, dateFormat = getChatDateFormat()) => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const startOfDay = (d) => {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  };
+  const today = startOfDay(new Date());
+  const msgDay = startOfDay(date);
+  const diffDays = Math.round((today - msgDay) / 86400000);
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+
+  return formatDateByPreference(date, dateFormat);
+};
+
+const getMessageDayKey = (msg) => {
+  const raw = msg?.sentAt || msg?.raw?.sentAt || msg?.raw?.SentAt || msg?.raw?.createdAt;
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+};
+
+/** Insert date separator rows between messages (WhatsApp-style). */
+const withDateSeparators = (list, dateFormat = getChatDateFormat()) => {
+  const rows = [];
+  let lastKey = "";
+  (list || []).forEach((msg) => {
+    const key = getMessageDayKey(msg);
+    if (key && key !== lastKey) {
+      rows.push({
+        id: `day-${key}`,
+        isDateSeparator: true,
+        label: formatChatDayLabel(
+          msg.sentAt || msg?.raw?.sentAt || msg?.raw?.SentAt,
+          dateFormat
+        ),
+      });
+      lastKey = key;
+    }
+    rows.push(msg);
+  });
+  return rows;
+};
+
 const mapApiMessageToUi = (msg, myUserId, peerOnline = false) => {
   const senderId = msg?.senderUserId ?? msg?.SenderUserId;
   const sentAt = msg?.sentAt ?? msg?.SentAt ?? msg?.createdAt ?? msg?.CreatedAt;
@@ -386,6 +440,7 @@ const mapApiMessageToUi = (msg, myUserId, peerOnline = false) => {
     from,
     text: attach?.text || body || fileNameFromPath || "",
     time: formatMessageTime(sentAt),
+    sentAt: sentAt || null,
     read,
     status,
     starred,
@@ -611,6 +666,7 @@ const Messages = () => {
   const [usersError, setUsersError] = useState("");
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState("");
+  const [dateFormat, setDateFormat] = useState(() => getChatDateFormat());
   const [sending, setSending] = useState(false);
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState("");
@@ -648,6 +704,7 @@ const Messages = () => {
   const [emojiPicker, setemojiPicker] = useState(false);
   /** Message for the “+” reaction emoji picker (only 6 allowed reactions save) */
   const [reactionPickerMsg, setReactionPickerMsg] = useState(null);
+  const [reactionDetailsMsg, setReactionDetailsMsg] = useState(null);
   const [showCopyAlert, setShowCopyAlert] = useState(false);
   const [forwardMessage, setForwardMessage] = useState(null);
   const [forwardSelectedIds, setForwardSelectedIds] = useState([]);
@@ -935,6 +992,21 @@ const Messages = () => {
           payload.ReactionEmoji ??
           (reactionCode ? reactionCodeToEmoji(reactionCode) : null);
         const isMine = reactorId === String(myUserId);
+        const senderOfMessage = String(
+          payload.senderUserId ?? payload.SenderUserId ?? ""
+        );
+        // Someone reacted to my message → live toast (SignalR).
+        if (
+          !isMine &&
+          reactionCode &&
+          senderOfMessage &&
+          senderOfMessage === String(myUserId)
+        ) {
+          const label = reactionEmoji || "👍";
+          setActionToast(`${label} reacted to your message`);
+          window.clearTimeout(showToast._timer);
+          showToast._timer = window.setTimeout(() => setActionToast(""), 2500);
+        }
 
         setThreads((prev) => {
           let changed = false;
@@ -996,6 +1068,10 @@ const Messages = () => {
       }
       if (event === "ReceiveMessage") {
         if (!payload || myUserId == null) return;
+
+        // Groups fan-out on user hub — Messages module ignores those.
+        const groupId = payload.groupId ?? payload.GroupId;
+        if (groupId != null && groupId !== "") return;
 
         const senderId = String(
           payload.senderUserId ?? payload.SenderUserId ?? ""
@@ -1918,14 +1994,17 @@ const Messages = () => {
   }, [showChatSearch]);
 
   const visibleMessages = useMemo(() => {
-    if (!chatSearchQuery.trim()) return messages;
-    const q = chatSearchQuery.trim().toLowerCase();
-    return messages.filter((msg) =>
-      String(msg.text || msg.fileName || "")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [messages, chatSearchQuery]);
+    let list = messages;
+    if (chatSearchQuery.trim()) {
+      const q = chatSearchQuery.trim().toLowerCase();
+      list = messages.filter((msg) =>
+        String(msg.text || msg.fileName || "")
+          .toLowerCase()
+          .includes(q)
+      );
+    }
+    return withDateSeparators(list, dateFormat);
+  }, [messages, chatSearchQuery, dateFormat]);
 
   const contactsByLetter = useMemo(() => {
     const groups = {};
@@ -2724,6 +2803,33 @@ const Messages = () => {
     };
   }, [showContactPanel, activeChat?.isSelf]);
 
+  // Settings → Update Profile (and PersonalInfo Edit) refresh “You” contact panel
+  useEffect(() => {
+    const onProfileUpdated = (event) => {
+      const profile = event?.detail?.profile;
+      if (!profile) return;
+      setChatList((prev) =>
+        prev.map((chat) =>
+          chat.isSelf ? applyProfileToSelfChat(chat, profile) : chat
+        )
+      );
+    };
+    window.addEventListener("chat-profile-updated", onProfileUpdated);
+    return () => window.removeEventListener("chat-profile-updated", onProfileUpdated);
+  }, []);
+
+  // Settings → Date Format change updates chat day chips live
+  useEffect(() => {
+    const onDateFormatUpdated = (event) => {
+      const next =
+        event?.detail?.dateFormat || getChatDateFormat();
+      setDateFormat(next);
+    };
+    window.addEventListener("chat-date-format-updated", onDateFormatUpdated);
+    return () =>
+      window.removeEventListener("chat-date-format-updated", onDateFormatUpdated);
+  }, []);
+
   const handleSelfAvatarChange = async (fileOrDataUrl) => {
     if (!activeChat?.isSelf) {
       showToast("You can only change your own profile picture");
@@ -3250,7 +3356,12 @@ const Messages = () => {
                               </div>
                             )}
                             <ul className="list-unstyled chat-conversation-list" id="users-conversation">
-                              {visibleMessages.map((msg) => (
+                              {visibleMessages.map((msg) =>
+                                msg.isDateSeparator ? (
+                                  <li key={msg.id} className="chat-list chat-day-separator">
+                                    <div className="chat-day-chip">{msg.label}</div>
+                                  </li>
+                                ) : (
                                 <li
                                   key={msg.id}
                                   id={`chat-msg-${msg.id}`}
@@ -3552,19 +3663,11 @@ const Messages = () => {
                                           <button
                                             type="button"
                                             className="comm-msg-reaction"
-                                            title={
-                                              msg.reactionCode
-                                                ? "Remove your reaction"
-                                                : "Reactions"
-                                            }
+                                            title="See who reacted"
                                             onClick={(e) => {
                                               e.preventDefault();
                                               e.stopPropagation();
-                                              if (!msg.reactionCode) return;
-                                              toggleMessageReaction(
-                                                msg,
-                                                msg.reactionCode
-                                              );
+                                              setReactionDetailsMsg(msg);
                                             }}
                                           >
                                             {msg.reaction}
@@ -3582,7 +3685,8 @@ const Messages = () => {
                                     </div>
                                   </div>
                                 </li>
-                              ))}
+                                )
+                              )}
                             </ul>
                           </div>
                         </div>
@@ -4032,6 +4136,56 @@ const Messages = () => {
           </div>
         </ModalBody>
       </Modal>
+
+      <MessageReactionDetails
+        isOpen={Boolean(reactionDetailsMsg?.id)}
+        messageId={
+          reactionDetailsMsg?.raw?.messageId ??
+          reactionDetailsMsg?.raw?.MessageId ??
+          reactionDetailsMsg?.id
+        }
+        message={reactionDetailsMsg}
+        meUserId={me?.userId}
+        peerUserId={
+          reactionDetailsMsg?.from === "me"
+            ? activeChatId
+            : reactionDetailsMsg?.senderUserId || activeChatId
+        }
+        resolveUser={(userId) => {
+          const id = String(userId);
+          if (id === String(me?.userId ?? "")) {
+            const selfChat = chatList.find((c) => c.isSelf);
+            return {
+              name: "You",
+              email: me?.email,
+              avatarSrc:
+                selfChat?.avatarSrc ||
+                selfChat?.img ||
+                resolveUserAvatarUrl(me?.userId, me?.profileImage),
+            };
+          }
+          const chat = chatList.find((c) => String(c.id) === id);
+          if (chat) {
+            return {
+              name: chat.realName || chat.name,
+              email: chat.email,
+              avatarSrc: chat.avatarSrc || chat.img,
+            };
+          }
+          return {
+            name: null,
+            email: null,
+            avatarSrc: resolveUserAvatarUrl(userId, null),
+          };
+        }}
+        onClose={() => setReactionDetailsMsg(null)}
+        onRemoveMine={(code) => {
+          if (reactionDetailsMsg) {
+            toggleMessageReaction(reactionDetailsMsg, code);
+          }
+          setReactionDetailsMsg(null);
+        }}
+      />
 
       {actionToast ? (
         <div className="alert alert-dark comm-action-toast shadow">{actionToast}</div>

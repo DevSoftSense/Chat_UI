@@ -63,6 +63,14 @@ export const CHAT_DELETE = "/api/chat"; // DELETE .../{chatId}
 export const CHAT_GROUPS = "/api/chat/groups";
 export const CHAT_ANNOUNCEMENTS = "/api/announcements";
 export const CHAT_ANNOUNCEMENT_CATEGORIES = "/api/announcement-categories";
+export const CHAT_SETTINGS = "/api/settings";
+export const CHAT_SETTINGS_PROFILE = "/api/settings/profile";
+export const CHAT_SETTINGS_STATUS = "/api/settings/status";
+export const CHAT_SETTINGS_MESSAGE_DEFAULTS = "/api/settings/message-defaults";
+export const CHAT_SETTINGS_NOTIFICATIONS = "/api/settings/notifications";
+export const CHAT_SETTINGS_PRIVACY = "/api/settings/privacy";
+export const CHAT_SETTINGS_STORAGE = "/api/settings/storage";
+export const CHAT_SETTINGS_INTEGRATIONS = "/api/settings/integrations";
 
 //Mailbox
 export const GET_MAIL_DETAILS = "/mail";

@@ -20,6 +20,7 @@ import {
 import {
   apiErrorMessage,
   departmentOptionsFromCategories,
+  toDatetimeLocalValue,
 } from "../utils/announcementUtils";
 
 const emptyForm = {
@@ -63,11 +64,9 @@ const mapAnnouncementToForm = (initial) => {
     departmentName,
     location: initial.location ?? initial.Location ?? "",
     isImportant: Boolean(initial.isImportant ?? initial.IsImportant),
-    expiryDate: initial.expiryDate
-      ? String(initial.expiryDate).slice(0, 16)
-      : initial.ExpiryDate
-        ? String(initial.ExpiryDate).slice(0, 16)
-        : "",
+    expiryDate: toDatetimeLocalValue(
+      initial.expiryDate ?? initial.ExpiryDate ?? null
+    ),
     recipientUserIds: normalizeRecipientIds(
       initial.recipientUserIds ?? initial.RecipientUserIds
     ),
