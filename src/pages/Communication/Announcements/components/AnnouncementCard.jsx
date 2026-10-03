@@ -8,8 +8,10 @@ import {
 import {
   formatAnnouncementDate,
   previewText,
+  resolveAnnouncementStatus,
   statusBadgeClass,
 } from "../utils/announcementUtils";
+import { STATUS_TICK_MS } from "../constants/announcementConstants";
 
 const themeColor = (cssVar, fallback) => {
   if (typeof window === "undefined") return fallback;
@@ -144,6 +146,13 @@ const AnnouncementCard = ({
   canManage = false,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Flip Active → Expired when expiry time passes (no full page reload needed)
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), STATUS_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   if (!announcement) return null;
 
@@ -178,7 +187,7 @@ const AnnouncementCard = ({
   const recipientCount = Number(
     announcement.recipientCount ?? announcement.RecipientCount ?? 0
   );
-  const statusName = announcement.statusName ?? announcement.StatusName ?? "";
+  const statusName = resolveAnnouncementStatus(announcement, now);
   const badge = statusBadgeClass(statusName);
   const { icon, color } = categoryIcon(category || department);
   const scopeLabel = department

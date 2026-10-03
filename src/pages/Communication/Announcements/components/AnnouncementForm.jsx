@@ -19,20 +19,23 @@ import {
 } from "../services/announcementService";
 import {
   apiErrorMessage,
+  defaultExpiryDatetimeLocal,
   departmentOptionsFromCategories,
   toDatetimeLocalValue,
 } from "../utils/announcementUtils";
+import { DEFAULT_EXPIRY_HOURS } from "../constants/announcementConstants";
 
-const emptyForm = {
+const emptyForm = () => ({
   title: "",
   description: "",
   categoryId: "",
   departmentName: "",
   location: "",
   isImportant: false,
-  expiryDate: "",
+  // Default: Active for 1 hour, then Expired
+  expiryDate: defaultExpiryDatetimeLocal(DEFAULT_EXPIRY_HOURS),
   recipientUserIds: [],
-};
+});
 
 const normalizeRecipientIds = (raw) => {
   if (!raw) return [];
@@ -47,7 +50,7 @@ const normalizeRecipientIds = (raw) => {
 };
 
 const mapAnnouncementToForm = (initial) => {
-  if (!initial) return emptyForm;
+  if (!initial) return emptyForm();
   const categoryName = String(
     initial.categoryName ?? initial.CategoryName ?? ""
   ).trim();
@@ -57,6 +60,9 @@ const mapAnnouncementToForm = (initial) => {
   if (!departmentName && categoryName.toLowerCase().includes("department")) {
     departmentName = categoryName;
   }
+  const existingExpiry = toDatetimeLocalValue(
+    initial.expiryDate ?? initial.ExpiryDate ?? null
+  );
   return {
     title: initial.title ?? initial.Title ?? "",
     description: initial.description ?? initial.Description ?? "",
@@ -64,9 +70,7 @@ const mapAnnouncementToForm = (initial) => {
     departmentName,
     location: initial.location ?? initial.Location ?? "",
     isImportant: Boolean(initial.isImportant ?? initial.IsImportant),
-    expiryDate: toDatetimeLocalValue(
-      initial.expiryDate ?? initial.ExpiryDate ?? null
-    ),
+    expiryDate: existingExpiry || defaultExpiryDatetimeLocal(DEFAULT_EXPIRY_HOURS),
     recipientUserIds: normalizeRecipientIds(
       initial.recipientUserIds ?? initial.RecipientUserIds
     ),
@@ -105,7 +109,7 @@ const AnnouncementForm = ({
       setError("");
       const id = initial?.announcementId ?? initial?.AnnouncementId;
       if (!id) {
-        setForm(emptyForm);
+        setForm(emptyForm());
         return;
       }
 
@@ -171,7 +175,12 @@ const AnnouncementForm = ({
         departmentName: form.departmentName.trim() || null,
         location: form.location.trim() || null,
         isImportant: Boolean(form.isImportant),
-        expiryDate: form.expiryDate ? new Date(form.expiryDate).toISOString() : null,
+        // Blank expiry → default 1 hour from now so status becomes Expired after that
+        expiryDate: form.expiryDate
+          ? new Date(form.expiryDate).toISOString()
+          : new Date(
+              Date.now() + DEFAULT_EXPIRY_HOURS * 60 * 60 * 1000
+            ).toISOString(),
         recipientUserIds: form.recipientUserIds,
         postedByName: me?.displayName || me?.email || null,
       };

@@ -14,3 +14,9 @@ export const SORT_OPTIONS = [
 ];
 
 export const DEFAULT_PAGE_SIZE = 4;
+
+/** New announcements default to expire after this many hours. */
+export const DEFAULT_EXPIRY_HOURS = 1;
+
+/** Re-check Active → Expired on the list without a full page reload. */
+export const STATUS_TICK_MS = 30_000;

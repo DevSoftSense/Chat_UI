@@ -1,3 +1,46 @@
+import { DEFAULT_EXPIRY_HOURS } from "../constants/announcementConstants";
+
+/** Convert ISO/UTC expiry to datetime-local value (local wall clock). */
+export const toDatetimeLocalValue = (value) => {
+  if (!value) return "";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+/** datetime-local value for "now + N hours" (default 1 hour). */
+export const defaultExpiryDatetimeLocal = (hours = DEFAULT_EXPIRY_HOURS) => {
+  const d = new Date(Date.now() + Number(hours) * 60 * 60 * 1000);
+  return toDatetimeLocalValue(d);
+};
+
+/**
+ * Display status from expiry time:
+ * - Expired when expiryDate is in the past
+ * - Active until then (ignores API "Expiring Soon" for short windows)
+ * Recipients do not affect status.
+ */
+export const resolveAnnouncementStatus = (item, now = Date.now()) => {
+  if (!item) return "";
+  const stored = String(item.statusName ?? item.StatusName ?? "").trim();
+  if (stored.toLowerCase() === "deleted") return stored || "Deleted";
+
+  const expiryRaw = item.expiryDate ?? item.ExpiryDate ?? null;
+  if (expiryRaw) {
+    const expiryMs = new Date(expiryRaw).getTime();
+    if (!Number.isNaN(expiryMs)) {
+      return expiryMs < now ? "Expired" : "Active";
+    }
+  }
+
+  const lower = stored.toLowerCase();
+  if (lower === "expired") return "Expired";
+  // API "Expiring Soon" (within 7 days) → still Active until expiry passes
+  if (lower.includes("expir")) return "Active";
+  return stored || "Active";
+};
+
 export const formatAnnouncementDate = (value) => {
   if (!value) return "";
   if (typeof value === "string") {
@@ -29,15 +72,6 @@ export const formatAnnouncementDate = (value) => {
   } catch {
     return String(value);
   }
-};
-
-/** Convert ISO/UTC expiry to datetime-local value (local wall clock). */
-export const toDatetimeLocalValue = (value) => {
-  if (!value) return "";
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
 export const previewText = (text, max = 160) => {

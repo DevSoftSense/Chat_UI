@@ -44,7 +44,6 @@ export const dashboardStats = [
   { label: "Unread Messages", value: 24, trend: "+12% from yesterday", icon: "ri-mail-unread-line", color: "primary" },
   { label: "Sent Today", value: 18, trend: "+8% from yesterday", icon: "ri-send-plane-2-line", color: "success" },
   { label: "Online Employees", value: "56 / 120", trend: null, icon: "ri-user-smile-line", color: "info" },
-  { label: "Pending Reads", value: 31, trend: "+15% from yesterday", icon: "ri-time-line", color: "warning" },
   { label: "Announcements", value: 7, trend: "2 expiring soon", icon: "ri-megaphone-line", color: "danger" },
   { label: "Drafts", value: 5, trend: "View drafts", icon: "ri-draft-line", color: "secondary" },
 ];

@@ -127,8 +127,6 @@ const PersonalInfo = ({
   const [showStarredSection, setShowStarredSection] = useState(false);
   const [editing, setEditing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [editPhone, setEditPhone] = useState("");
-  const [editEmail, setEditEmail] = useState("");
   const [editLocation, setEditLocation] = useState("");
   const [editName, setEditName] = useState("");
   const [editJob, setEditJob] = useState("");
@@ -161,11 +159,6 @@ const PersonalInfo = ({
 
   useEffect(() => {
     if (!editing) return;
-    const nationalPhone = normalizeProfilePhoneFields(
-      displayField(phone) === "—" ? "" : String(phone || "")
-    ).phone;
-    setEditPhone(nationalPhone);
-    setEditEmail(displayField(email) === "—" ? "" : String(email || ""));
     setEditLocation(
       displayField(location) === "—" ? "" : String(location || "")
     );
@@ -174,7 +167,7 @@ const PersonalInfo = ({
     setEditDepartment(
       displayField(department) === "—" ? "" : String(department || "")
     );
-  }, [editing, phone, email, location, currentuser, realName, jobTitle, department]);
+  }, [editing, location, currentuser, realName, jobTitle, department]);
 
   const toggleStarredSection = () => {
     setShowStarredSection((prev) => {
@@ -210,10 +203,13 @@ const PersonalInfo = ({
     if (typeof onProfileSave !== "function") return;
     setSavingProfile(true);
     try {
-      // SoftOnCloud UpdateUserProfileRequest — no email/location (additionalProperties: false)
+      // SoftOnCloud UpdateUserProfileRequest — keep existing phone; email/location not editable here
+      const existingPhone = normalizeProfilePhoneFields(
+        displayField(phone) === "—" ? "" : String(phone || "")
+      ).phone;
       await onProfileSave({
         displayName: editName.trim() || undefined,
-        phone: normalizeProfilePhoneFields(editPhone.trim()).phone,
+        phone: existingPhone,
         jobTitle: editJob.trim(),
         department: editDepartment.trim(),
       });
@@ -231,6 +227,7 @@ const PersonalInfo = ({
       direction="end"
       className="offcanvas-end border-0"
       toggle={onCloseClick}
+      backdrop={false}
     >
       <OffcanvasBody className="offcanvas-body profile-offcanvas p-0">
         <div className="team-cover">
@@ -473,33 +470,6 @@ const PersonalInfo = ({
               </div>
               <div className="mb-3">
                 <Label className="text-muted text-uppercase fw-medium fs-12 mb-1">
-                  Number
-                </Label>
-                <Input
-                  type="text"
-                  value={editPhone}
-                  onChange={(e) =>
-                    setEditPhone(e.target.value.replace(/[^\d+\s-]/g, "").slice(0, 20))
-                  }
-                  placeholder="Phone number"
-                  maxLength={20}
-                  disabled={savingProfile}
-                />
-              </div>
-              <div className="mb-3">
-                <Label className="text-muted text-uppercase fw-medium fs-12 mb-1">
-                  Email
-                </Label>
-                <Input
-                  type="email"
-                  value={editEmail}
-                  readOnly
-                  disabled
-                  placeholder="Email"
-                />
-              </div>
-              <div className="mb-3">
-                <Label className="text-muted text-uppercase fw-medium fs-12 mb-1">
                   Job
                 </Label>
                 <Input
@@ -546,18 +516,6 @@ const PersonalInfo = ({
                     realName || (currentuser !== "You" ? currentuser : "")
                   )}
                 </h6>
-              </div>
-              <div className="mb-3">
-                <p className="text-muted text-uppercase fw-medium fs-12 mb-1">
-                  Number
-                </p>
-                <h6>{displayField(phone)}</h6>
-              </div>
-              <div className="mb-3">
-                <p className="text-muted text-uppercase fw-medium fs-12 mb-1">
-                  Email
-                </p>
-                <h6>{displayField(email)}</h6>
               </div>
               <div className="mb-3">
                 <p className="text-muted text-uppercase fw-medium fs-12 mb-1">

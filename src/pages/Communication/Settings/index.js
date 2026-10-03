@@ -43,7 +43,7 @@ const DATE_FORMAT_OPTIONS = ["DD MMM YYYY", "MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM
 const NOTIF_MODE_OPTIONS = [
   {
     value: "all",
-    label: "Ball",
+    label: "Bell",
     icons: [{ icon: "ri-notification-3-fill", tone: "primary" }],
   },
   {
@@ -53,7 +53,7 @@ const NOTIF_MODE_OPTIONS = [
   },
   {
     value: "bell_browser",
-    label: "Ball + Browser",
+    label: "Bell + Browser",
     icons: [
       { icon: "ri-notification-3-fill", tone: "primary" },
       { icon: "ri-global-line", tone: "info" },
@@ -69,13 +69,23 @@ const normalizeNotifModeLocal = (value, fallback = "all") => {
     .toLowerCase()
     .replace(/[\s+]+/g, "_");
   if (s === "all" || s === "true") return "all";
+  // Bell only (header notification bell)
+  if (
+    s === "bell" ||
+    s === "ball" ||
+    s === "notification_ball" ||
+    s === "notification_bell"
+  ) {
+    return "all";
+  }
   if (s === "browser" || s === "desktop") return "browser";
+  // Bell + Browser
   if (
     s === "bell_browser" ||
-    s === "bell" ||
-    s === "notification_ball" ||
+    s === "ball_browser" ||
     s === "notification_ball_with_browser" ||
-    s === "ball_browser"
+    s === "notification_bell_with_browser" ||
+    s === "bell+browser"
   ) {
     return "bell_browser";
   }
@@ -171,17 +181,25 @@ const normalizeSettings = (raw) => {
       autoSaveDraft: Boolean(pick(messageDefaults, "autoSaveDraft", "AutoSaveDraft", false)),
     },
     notifications: {
-      messageReceived: normalizeNotifModeLocal(
-        pick(notifications, "messageReceived", "MessageReceived", "all"),
-        "all"
+      // Keep API booleans as-is — mode strings live in runtime prefs (localStorage).
+      // Converting true → "all" here would wipe Bell/Browser/Bell+Browser on refresh.
+      messageReceived: pick(
+        notifications,
+        "messageReceived",
+        "MessageReceived",
+        true
       ),
-      groupMessages: normalizeNotifModeLocal(
-        pick(notifications, "groupMessages", "GroupMessages", "all"),
-        "all"
+      groupMessages: pick(
+        notifications,
+        "groupMessages",
+        "GroupMessages",
+        true
       ),
-      announcements: normalizeNotifModeLocal(
-        pick(notifications, "announcements", "Announcements", "all"),
-        "all"
+      announcements: pick(
+        notifications,
+        "announcements",
+        "Announcements",
+        true
       ),
       soundEnabled: Boolean(pick(notifications, "soundEnabled", "SoundEnabled", true)),
       desktopEnabled: Boolean(pick(notifications, "desktopEnabled", "DesktopEnabled", true)),
@@ -506,14 +524,6 @@ const Settings = () => {
         />
       </div>
       <div className="mb-2">
-        <Label className="fs-12">Phone</Label>
-        <Input
-          bsSize="sm"
-          value={profileForm.phone}
-          onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))}
-        />
-      </div>
-      <div className="mb-2">
         <Label className="fs-12">Language</Label>
         <Input
           type="select"
@@ -795,6 +805,12 @@ const Settings = () => {
                 desktopEnabled: true,
               };
               const result = await updateChatSettingsNotifications(apiPayload);
+              // Persist delivery modes (API only stores on/off booleans)
+              setChatRuntimePrefs({
+                ...modes,
+                desktopEnabled: true,
+                soundEnabled: Boolean(notifForm.soundEnabled ?? true),
+              });
               const nextNotif = {
                 ...normalizeSettings({ notifications: result }).notifications,
                 ...modes,
@@ -810,17 +826,26 @@ const Settings = () => {
                 status: settings.status,
               });
               const needsBrowser = Object.values(modes).some(
-                (m) => m === "all" || m === "browser" || m === "bell_browser"
+                (m) => m === "browser" || m === "bell_browser"
               );
               if (
                 needsBrowser &&
                 typeof Notification !== "undefined" &&
-                Notification.permission === "default"
+                Notification.permission !== "granted"
               ) {
                 try {
-                  await Notification.requestPermission();
+                  if (Notification.permission === "default") {
+                    await Notification.requestPermission();
+                  }
                 } catch {
                   /* ignore */
+                }
+                if (Notification.permission !== "granted") {
+                  window.setTimeout(() => {
+                    showToast(
+                      "Allow browser notifications in Chrome to get popups."
+                    );
+                  }, 2600);
                 }
               }
             }, "Notifications saved")

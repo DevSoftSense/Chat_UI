@@ -71,6 +71,7 @@ export const CHAT_SETTINGS_NOTIFICATIONS = "/api/settings/notifications";
 export const CHAT_SETTINGS_PRIVACY = "/api/settings/privacy";
 export const CHAT_SETTINGS_STORAGE = "/api/settings/storage";
 export const CHAT_SETTINGS_INTEGRATIONS = "/api/settings/integrations";
+export const CHAT_DASHBOARD = "/api/chat/dashboard";
 
 //Mailbox
 export const GET_MAIL_DETAILS = "/mail";

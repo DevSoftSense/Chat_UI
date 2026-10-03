@@ -4,12 +4,11 @@ import SimpleBar from "simplebar-react";
 import classnames from "classnames";
 import {
   getChatMessageInfo,
-  markChatMessagesRead,
   resolveUserAvatarUrl,
   subscribeChatPresence,
 } from "../../../helpers/softoncloud_auth_helper";
 
-/** WhatsApp-style receipt time: "Yesterday at 7:02 pm" */
+/** WhatsApp-style receipt time: "Today at 12:18 pm" */
 export const formatMessageInfoWhen = (value) => {
   if (!value) return "";
   const d = value instanceof Date ? value : new Date(value);
@@ -22,7 +21,7 @@ export const formatMessageInfoWhen = (value) => {
     hour: "numeric",
     minute: "2-digit",
   });
-  if (dayDiff === 0) return timePart;
+  if (dayDiff === 0) return `Today at ${timePart}`;
   if (dayDiff === 1) return `Yesterday at ${timePart}`;
   return `${d.toLocaleDateString([], {
     day: "numeric",
@@ -37,187 +36,370 @@ const apiErrorMessage = (error, fallback) =>
   error?.response?.data?.message ||
   fallback;
 
+const memberProfile = (mergedMembers, userId) => {
+  const member = (mergedMembers || []).find(
+    (m) => String(m.userId) === String(userId)
+  );
+  return {
+    name: member?.isSelf ? "You" : member?.name || `User ${userId}`,
+    avatarSrc: member?.avatarSrc || resolveUserAvatarUrl(userId, null),
+  };
+};
+
 /**
- * Hook: Group Message Info state, API load, and SignalR live updates.
- * Place all Message Info logic here (Groups folder).
+ * Opens WhatsApp-style Message Info for the EXACT clicked message.
  */
 export const useGroupMessageInfo = ({
   me,
   mergedMembers = [],
-  activeChatId = null,
+  onlineUserIds = null,
   onBeforeOpen = null,
   onError = null,
 } = {}) => {
   const [message, setMessage] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [members, setMembers] = useState([]);
+  const [onlineIds, setOnlineIds] = useState(() => {
+    if (onlineUserIds instanceof Set) return new Set(onlineUserIds);
+    if (Array.isArray(onlineUserIds)) {
+      return new Set(onlineUserIds.map((id) => String(id)));
+    }
+    return new Set();
+  });
   const messageRef = useRef(null);
+  const requestSeqRef = useRef(0);
+  // messageId → Map(userId → { deliveredAt, readAt }) — keep SignalR reads even if panel closed
+  const receiptCacheRef = useRef(new Map());
+  const mergedMembersRef = useRef(mergedMembers);
 
   useEffect(() => {
     messageRef.current = message;
   }, [message]);
 
+  useEffect(() => {
+    mergedMembersRef.current = mergedMembers;
+  }, [mergedMembers]);
+
+  // Keep in sync when parent Groups presence updates.
+  useEffect(() => {
+    if (onlineUserIds instanceof Set) {
+      setOnlineIds(new Set([...onlineUserIds].map(String)));
+      return;
+    }
+    if (Array.isArray(onlineUserIds)) {
+      setOnlineIds(new Set(onlineUserIds.map((id) => String(id))));
+    }
+  }, [onlineUserIds]);
+
+  const rememberReceipt = useCallback((messageId, userId, patch) => {
+    const mid = String(messageId ?? "");
+    const uid = String(userId ?? "");
+    if (!mid || !uid) return;
+    if (!receiptCacheRef.current.has(mid)) {
+      receiptCacheRef.current.set(mid, new Map());
+    }
+    const byUser = receiptCacheRef.current.get(mid);
+    const prev = byUser.get(uid) || { deliveredAt: null, readAt: null };
+    byUser.set(uid, {
+      deliveredAt: patch.deliveredAt || prev.deliveredAt || null,
+      readAt: patch.readAt || prev.readAt || null,
+    });
+  }, []);
+
+  const applyReceiptToOpenMembers = useCallback(
+    (messageId, userId, patch) => {
+      const openMsg = messageRef.current;
+      if (!openMsg?.id || String(openMsg.id) !== String(messageId)) return;
+      const uid = String(userId);
+      setMembers((prev) => {
+        if (!prev.some((m) => String(m.userId) === uid)) {
+          const profile = memberProfile(mergedMembersRef.current, uid);
+          return [
+            ...prev,
+            {
+              userId,
+              name: profile.name,
+              avatarSrc: profile.avatarSrc,
+              deliveredAt: patch.deliveredAt || null,
+              readAt: patch.readAt || null,
+            },
+          ];
+        }
+        return prev.map((m) =>
+          String(m.userId) === uid
+            ? {
+                ...m,
+                deliveredAt: patch.deliveredAt || m.deliveredAt || null,
+                readAt: patch.readAt || m.readAt || null,
+              }
+            : m
+        );
+      });
+    },
+    []
+  );
+
   const close = useCallback(() => {
+    requestSeqRef.current += 1;
     setMessage(null);
     setMembers([]);
     setLoading(false);
+    setLoadError("");
   }, []);
 
-  const clearIfMessage = useCallback((messageId) => {
-    if (
-      messageRef.current &&
-      String(messageRef.current.id) === String(messageId)
-    ) {
-      setMessage(null);
-      setMembers([]);
-    }
-  }, []);
+  const clearIfMessage = useCallback(
+    (messageId) => {
+      if (
+        messageRef.current &&
+        String(messageRef.current.id) === String(messageId)
+      ) {
+        close();
+      }
+    },
+    [close]
+  );
 
   const open = useCallback(
     async (msg) => {
-      if (!msg?.id) return;
-      setMessage(msg);
+      const messageId = msg?.id ?? msg?.messageId ?? msg?.MessageId;
+      if (messageId == null || messageId === "") return;
+
+      const requestSeq = ++requestSeqRef.current;
+      const selected = {
+        ...msg,
+        id: messageId,
+        chatId: msg?.chatId ?? msg?.raw?.chatId ?? msg?.raw?.ChatId ?? null,
+      };
+      // Open panel immediately (WhatsApp-style right popup).
+      setMessage(selected);
       setLoading(true);
+      setLoadError("");
+      setMembers([]);
       if (typeof onBeforeOpen === "function") onBeforeOpen();
 
       const senderId = String(
-        msg.senderUserId ??
-          msg.raw?.senderUserId ??
-          msg.raw?.SenderUserId ??
-          (msg.from === "me" ? me?.userId : "") ??
+        selected.senderUserId ??
+          selected.raw?.senderUserId ??
+          selected.raw?.SenderUserId ??
+          (selected.from === "me" ? me?.userId : "") ??
           ""
       );
 
-      const seed = (mergedMembers || [])
+      const directory = (mergedMembers || [])
         .filter((m) => m && m.isActive !== false)
-        .filter((m) => String(m.userId) !== senderId)
-        .map((m) => ({
-          userId: m.userId,
-          name: m.isSelf ? "You" : m.name || `User ${m.userId}`,
-          avatarSrc: m.avatarSrc || resolveUserAvatarUrl(m.userId, null),
-          deliveredAt: null,
-          readAt: null,
-        }));
-      setMembers(seed);
+        .filter((m) => String(m.userId) !== senderId);
+
+      const cached =
+        receiptCacheRef.current.get(String(messageId)) || new Map();
+
+      const buildRow = (userId, name, avatarSrc, apiRow) => {
+        const cachedRow = cached.get(String(userId));
+        return {
+          userId,
+          name,
+          avatarSrc,
+          deliveredAt:
+            apiRow?.deliveredAt || cachedRow?.deliveredAt || null,
+          readAt: apiRow?.readAt || cachedRow?.readAt || null,
+        };
+      };
 
       try {
-        const isMine =
-          String(senderId) === String(me?.userId ?? "") || msg.from === "me";
-        if (!isMine && activeChatId) {
-          await markChatMessagesRead(activeChatId).catch(() => {});
-        }
+        const info = await getChatMessageInfo(messageId);
+        if (requestSeq !== requestSeqRef.current) return;
 
-        const info = await getChatMessageInfo(msg.id);
+        // Keep API receipts in SignalR cache for later opens.
+        (info?.members || []).forEach((row) => {
+          if (!row?.userId) return;
+          rememberReceipt(messageId, row.userId, {
+            deliveredAt: row.deliveredAt,
+            readAt: row.readAt,
+          });
+        });
+
         const receiptById = new Map(
           (info?.members || []).map((row) => [String(row.userId), row])
         );
-        const fromApiOnly = (info?.members || [])
-          .filter(
-            (row) =>
-              !seed.some((s) => String(s.userId) === String(row.userId)) &&
-              String(row.userId) !== senderId
-          )
-          .map((row) => {
-            const member = (mergedMembers || []).find(
-              (m) => String(m.userId) === String(row.userId)
-            );
-            return {
-              userId: row.userId,
-              name: member?.isSelf
-                ? "You"
-                : member?.name || `User ${row.userId}`,
-              avatarSrc:
-                member?.avatarSrc || resolveUserAvatarUrl(row.userId, null),
-              deliveredAt: row.deliveredAt || null,
-              readAt: row.readAt || null,
-            };
-          });
 
-        setMembers([
-          ...seed.map((m) => {
-            const row = receiptById.get(String(m.userId));
-            return {
-              ...m,
-              deliveredAt: row?.deliveredAt || null,
-              readAt: row?.readAt || null,
-            };
-          }),
-          ...fromApiOnly,
-        ]);
+        const byId = new Map();
+        directory.forEach((m) => {
+          const row = receiptById.get(String(m.userId));
+          byId.set(
+            String(m.userId),
+            buildRow(
+              m.userId,
+              m.isSelf ? "You" : m.name || `User ${m.userId}`,
+              m.avatarSrc || resolveUserAvatarUrl(m.userId, null),
+              row
+            )
+          );
+        });
+
+        (info?.members || []).forEach((row) => {
+          if (String(row.userId) === senderId) return;
+          if (byId.has(String(row.userId))) return;
+          const profile = memberProfile(mergedMembers, row.userId);
+          byId.set(
+            String(row.userId),
+            buildRow(row.userId, profile.name, profile.avatarSrc, row)
+          );
+        });
+
+        // Cached SignalR readers not yet in directory/API list.
+        cached.forEach((row, uid) => {
+          if (uid === senderId || byId.has(uid)) return;
+          const profile = memberProfile(mergedMembers, uid);
+          byId.set(uid, buildRow(uid, profile.name, profile.avatarSrc, row));
+        });
+
+        setMembers([...byId.values()]);
       } catch (error) {
-        if (typeof onError === "function") {
-          onError(apiErrorMessage(error, "Unable to load message info."));
-        }
+        if (requestSeq !== requestSeqRef.current) return;
+        // Still show group members; merge SignalR receipt cache (Read by).
+        setMembers(
+          directory.map((m) =>
+            buildRow(
+              m.userId,
+              m.isSelf ? "You" : m.name || `User ${m.userId}`,
+              m.avatarSrc || resolveUserAvatarUrl(m.userId, null),
+              null
+            )
+          )
+        );
+        const errMsg = apiErrorMessage(error, "Unable to load message info.");
+        setLoadError(errMsg);
+        if (typeof onError === "function") onError(errMsg);
       } finally {
-        setLoading(false);
+        if (requestSeq === requestSeqRef.current) setLoading(false);
       }
     },
-    [mergedMembers, me?.userId, activeChatId, onBeforeOpen, onError]
+    [mergedMembers, me?.userId, onBeforeOpen, onError, rememberReceipt]
   );
 
-  // Live Delivered / Read while Message Info is open (shared SignalR hub).
   useEffect(() => {
     const unsubscribe = subscribeChatPresence((event, payload) => {
-      if (!payload) return;
-      const openMsg = messageRef.current;
-      if (!openMsg?.id) return;
+      // Presence: online → Delivered to, offline → Remaining (when not read).
+      if (event === "OnlineUsers") {
+        const ids = Array.isArray(payload)
+          ? payload.map((id) => String(id))
+          : [];
+        setOnlineIds(new Set(ids));
+        return;
+      }
+      if (event === "UserOnline") {
+        const id = String(payload ?? "");
+        if (!id) return;
+        setOnlineIds((prev) => {
+          if (prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+        return;
+      }
+      if (event === "UserOffline") {
+        const id = String(payload ?? "");
+        if (!id) return;
+        setOnlineIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        return;
+      }
+
+      if (payload == null) return;
 
       if (event === "MessageDelivered") {
         const deliveredMessageId = String(
           payload.messageId ?? payload.MessageId ?? ""
         );
-        if (deliveredMessageId !== String(openMsg.id)) return;
         const receiverId = String(
           payload.receiverUserId ?? payload.ReceiverUserId ?? ""
         );
-        if (!receiverId) return;
+        if (!deliveredMessageId || !receiverId) return;
         const when =
           payload.deliveredAt ??
           payload.DeliveredAt ??
           new Date().toISOString();
-        setMembers((prev) =>
-          prev.map((m) =>
-            String(m.userId) === receiverId
-              ? { ...m, deliveredAt: m.deliveredAt || when }
-              : m
-          )
-        );
+        rememberReceipt(deliveredMessageId, receiverId, {
+          deliveredAt: when,
+        });
+        applyReceiptToOpenMembers(deliveredMessageId, receiverId, {
+          deliveredAt: when,
+        });
         return;
       }
 
       if (event === "MessagesRead") {
         const ids = Array.isArray(payload.messageIds)
-          ? payload.messageIds
+          ? payload.messageIds.map(String)
           : Array.isArray(payload.MessageIds)
-            ? payload.MessageIds
+            ? payload.MessageIds.map(String)
             : [];
-        if (!ids.map(String).includes(String(openMsg.id))) return;
         const readerId = String(
           payload.readerUserId ?? payload.ReaderUserId ?? ""
         );
         if (!readerId) return;
         const when =
           payload.readAt ?? payload.ReadAt ?? new Date().toISOString();
-        setMembers((prev) =>
-          prev.map((m) =>
-            String(m.userId) === readerId
-              ? {
-                  ...m,
-                  deliveredAt: m.deliveredAt || when,
-                  readAt: when,
-                }
-              : m
-          )
-        );
+        const payloadChatId = payload.chatId ?? payload.ChatId;
+        const openMsg = messageRef.current;
+        const openChatId =
+          openMsg?.chatId ??
+          openMsg?.raw?.chatId ??
+          openMsg?.raw?.ChatId ??
+          null;
+
+        const targetMessageIds =
+          ids.length > 0
+            ? ids
+            : openMsg?.id &&
+              payloadChatId != null &&
+              openChatId != null &&
+              String(payloadChatId) === String(openChatId)
+              ? [String(openMsg.id)]
+              : [];
+
+        // Cache every message id from the read event (panel may open later).
+        if (ids.length > 0) {
+          ids.forEach((mid) => {
+            rememberReceipt(mid, readerId, {
+              deliveredAt: when,
+              readAt: when,
+            });
+            applyReceiptToOpenMembers(mid, readerId, {
+              deliveredAt: when,
+              readAt: when,
+            });
+          });
+          return;
+        }
+
+        // Fallback: chat-scoped read with no messageIds list.
+        targetMessageIds.forEach((mid) => {
+          rememberReceipt(mid, readerId, {
+            deliveredAt: when,
+            readAt: when,
+          });
+          applyReceiptToOpenMembers(mid, readerId, {
+            deliveredAt: when,
+            readAt: when,
+          });
+        });
       }
     });
     return unsubscribe;
-  }, []);
+  }, [rememberReceipt, applyReceiptToOpenMembers]);
 
   return {
     message,
     members,
+    onlineIds,
     loading,
+    loadError,
     open,
     close,
     clearIfMessage,
@@ -225,34 +407,75 @@ export const useGroupMessageInfo = ({
   };
 };
 
-/**
- * Group Message Info panel UI — Read by / Delivered to / Remaining.
- */
-const MessageInfo = ({ message, members = [], loading = false, onClose }) => {
+/** WhatsApp row: avatar + name left, time right */
+const MemberRow = ({ member, whenLabel }) => (
+  <div className="comm-mi-member">
+    <img src={member.avatarSrc} alt="" className="comm-mi-member-avatar" />
+    <div className="comm-mi-member-body">
+      <p className="comm-mi-member-name mb-0 text-truncate">{member.name}</p>
+    </div>
+    {whenLabel ? (
+      <small className="comm-mi-when-right text-end">{whenLabel}</small>
+    ) : null}
+  </div>
+);
+
+const MessageInfo = ({
+  message,
+  members = [],
+  onlineIds = null,
+  loading = false,
+  loadError = "",
+  onClose,
+}) => {
+  const onlineSet = useMemo(() => {
+    if (onlineIds instanceof Set) return onlineIds;
+    if (Array.isArray(onlineIds)) return new Set(onlineIds.map(String));
+    return new Set();
+  }, [onlineIds]);
+
+  // SignalR rules:
+  // - readAt → Read by
+  // - online (or deliveredAt) and not read → Delivered to
+  // - offline and not delivered/read → Remaining
   const readMembers = useMemo(
     () => (members || []).filter((m) => m.readAt),
     [members]
   );
   const deliveredMembers = useMemo(
-    () => (members || []).filter((m) => m.deliveredAt && !m.readAt),
-    [members]
+    () =>
+      (members || []).filter((m) => {
+        if (m.readAt) return false;
+        if (m.deliveredAt) return true;
+        return onlineSet.has(String(m.userId));
+      }),
+    [members, onlineSet]
   );
   const remainingMembers = useMemo(
-    () => (members || []).filter((m) => !m.deliveredAt && !m.readAt),
-    [members]
+    () =>
+      (members || []).filter((m) => {
+        if (m.readAt) return false;
+        if (m.deliveredAt) return false;
+        return !onlineSet.has(String(m.userId));
+      }),
+    [members, onlineSet]
   );
   const anyRead = readMembers.length > 0;
+  const unreadRemaining = deliveredMembers.length + remainingMembers.length;
 
   return (
     <Offcanvas
       isOpen={Boolean(message)}
       direction="end"
       toggle={onClose}
+      backdrop={false}
+      scrollable
       className="offcanvas-end border-0 comm-group-info comm-msg-info"
+      style={{ zIndex: 1100 }}
       tabIndex="-1"
     >
-      <OffcanvasBody className="p-0 d-flex flex-column">
-        <div className="comm-gi-header">
+      <OffcanvasBody className="p-0 d-flex flex-column h-100">
+        <div className="comm-mi-header">
           <button
             type="button"
             className="btn btn-ghost-secondary btn-icon btn-sm"
@@ -261,7 +484,7 @@ const MessageInfo = ({ message, members = [], loading = false, onClose }) => {
           >
             <i className="ri-close-line fs-18"></i>
           </button>
-          <h5 className="comm-gi-title mb-0 flex-grow-1">Message info</h5>
+          <h5 className="comm-mi-title mb-0 flex-grow-1">Message info</h5>
         </div>
 
         {message ? (
@@ -298,7 +521,8 @@ const MessageInfo = ({ message, members = [], loading = false, onClose }) => {
                   {message.from === "me" ? (
                     <i
                       className={classnames("ri-check-double-line ms-1", {
-                        "text-primary": anyRead,
+                        "comm-mi-ticks-read": anyRead,
+                        "comm-mi-ticks-delivered": !anyRead,
                       })}
                     ></i>
                   ) : null}
@@ -306,7 +530,7 @@ const MessageInfo = ({ message, members = [], loading = false, onClose }) => {
               </div>
             </div>
 
-            <SimpleBar className="comm-gi-scroll flex-grow-1">
+            <SimpleBar className="comm-mi-scroll flex-grow-1">
               {loading ? (
                 <div className="text-center py-5 text-muted">
                   <Spinner size="sm" className="me-2" />
@@ -314,113 +538,84 @@ const MessageInfo = ({ message, members = [], loading = false, onClose }) => {
                 </div>
               ) : (
                 <>
+                  {loadError ? (
+                    <div className="text-center text-muted px-3 pt-3 pb-2 fs-12">
+                      {loadError}
+                    </div>
+                  ) : null}
                   <div className="comm-mi-section">
                     <div className="comm-mi-section-title">
-                      <i className="ri-check-double-line text-primary me-1"></i>
+                      <i className="ri-check-double-line comm-mi-ticks-read me-2"></i>
                       Read by
-                      <span className="comm-mi-count ms-1">
-                        {readMembers.length}
-                      </span>
                     </div>
                     {readMembers.length === 0 ? (
-                      <p className="comm-mi-empty px-3 py-2 mb-0">
-                        No one has read this message yet
+                      <p className="comm-mi-empty px-3 pb-3 mb-0">
+                        No one has read this message yet.
                       </p>
                     ) : (
-                      readMembers.map((m) => (
-                        <div
-                          key={`read-${m.userId}`}
-                          className="comm-gi-member"
-                        >
-                          <img
-                            src={m.avatarSrc}
-                            alt=""
-                            className="comm-gi-member-avatar"
+                      <>
+                        {readMembers.map((m) => (
+                          <MemberRow
+                            key={`read-${m.userId}`}
+                            member={m}
+                            whenLabel={formatMessageInfoWhen(m.readAt)}
                           />
-                          <div className="comm-gi-member-body">
-                            <p className="comm-gi-member-name mb-0 text-truncate">
-                              {m.name}
-                            </p>
-                            <small className="comm-mi-when d-block">
-                              {formatMessageInfoWhen(m.readAt)}
-                            </small>
-                          </div>
-                        </div>
-                      ))
+                        ))}
+                        {unreadRemaining > 0 ? (
+                          <p className="comm-mi-remaining px-3 py-2 mb-0">
+                            {unreadRemaining} remaining
+                          </p>
+                        ) : null}
+                      </>
                     )}
                   </div>
 
                   <div className="comm-mi-section">
                     <div className="comm-mi-section-title">
-                      <i className="ri-check-double-line text-muted me-1"></i>
+                      <i className="ri-check-double-line comm-mi-ticks-delivered me-2"></i>
                       Delivered to
-                      <span className="comm-mi-count ms-1">
-                        {deliveredMembers.length}
-                      </span>
                     </div>
                     {deliveredMembers.length === 0 ? (
-                      <p className="comm-mi-empty px-3 py-2 mb-0">
-                        No pending deliveries
+                      <p className="comm-mi-empty px-3 pb-3 mb-0">
+                        {remainingMembers.length > 0
+                          ? "Not delivered to anyone yet."
+                          : "Everyone who received it has read it."}
                       </p>
                     ) : (
-                      deliveredMembers.map((m) => (
-                        <div
-                          key={`del-${m.userId}`}
-                          className="comm-gi-member"
-                        >
-                          <img
-                            src={m.avatarSrc}
-                            alt=""
-                            className="comm-gi-member-avatar"
+                      <>
+                        {deliveredMembers.map((m) => (
+                          <MemberRow
+                            key={`del-${m.userId}`}
+                            member={m}
+                            whenLabel={
+                              formatMessageInfoWhen(m.deliveredAt) || "Online"
+                            }
                           />
-                          <div className="comm-gi-member-body">
-                            <p className="comm-gi-member-name mb-0 text-truncate">
-                              {m.name}
-                            </p>
-                            <small className="comm-mi-when d-block">
-                              {formatMessageInfoWhen(m.deliveredAt)}
-                            </small>
-                          </div>
-                        </div>
-                      ))
+                        ))}
+                        {remainingMembers.length > 0 ? (
+                          <p className="comm-mi-remaining px-3 py-2 mb-0">
+                            {remainingMembers.length} remaining
+                          </p>
+                        ) : null}
+                      </>
                     )}
                   </div>
 
-                  <div className="comm-mi-section">
-                    <div className="comm-mi-section-title">
-                      <i className="ri-time-line text-muted me-1"></i>
-                      Remaining
-                      <span className="comm-mi-count ms-1">
-                        {remainingMembers.length}
-                      </span>
-                    </div>
-                    {remainingMembers.length === 0 ? (
-                      <p className="comm-mi-empty px-3 py-2 mb-0">
-                        All members have received this message
-                      </p>
-                    ) : (
-                      remainingMembers.map((m) => (
-                        <div
+                  {remainingMembers.length > 0 ? (
+                    <div className="comm-mi-section">
+                      <div className="comm-mi-section-title">
+                        <i className="ri-time-line text-muted me-2"></i>
+                        Remaining
+                      </div>
+                      {remainingMembers.map((m) => (
+                        <MemberRow
                           key={`rem-${m.userId}`}
-                          className="comm-gi-member"
-                        >
-                          <img
-                            src={m.avatarSrc}
-                            alt=""
-                            className="comm-gi-member-avatar"
-                          />
-                          <div className="comm-gi-member-body">
-                            <p className="comm-gi-member-name mb-0 text-truncate">
-                              {m.name}
-                            </p>
-                            <small className="comm-mi-when d-block">
-                              Not delivered yet
-                            </small>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                          member={m}
+                          whenLabel="Offline"
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                 </>
               )}
             </SimpleBar>

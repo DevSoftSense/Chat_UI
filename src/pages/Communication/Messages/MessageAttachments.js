@@ -173,3 +173,155 @@ export const validateAttachFileKind = (kind, file) => {
   }
   return null;
 };
+
+/* Composer drafts — typed text left without sending (Messages / Groups). */
+const COMPOSER_DRAFTS_KEY = "softoncloud_chat_composer_drafts_v1";
+export const COMPOSER_DRAFTS_EVENT = "chat-composer-drafts-changed";
+
+const readComposerDraftMap = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COMPOSER_DRAFTS_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeComposerDraftMap = (map) => {
+  localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(map || {}));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(COMPOSER_DRAFTS_EVENT));
+  }
+};
+
+export const dmDraftKey = (userId) =>
+  userId != null && userId !== "" ? `dm:${userId}` : "";
+
+export const groupDraftKey = (groupId) =>
+  groupId != null && groupId !== "" ? `group:${groupId}` : "";
+
+export const getComposerDraft = (key) => {
+  if (!key) return "";
+  return String(readComposerDraftMap()[key]?.text || "");
+};
+
+export const setComposerDraft = (key, text, meta = {}) => {
+  if (!key) return;
+  const map = readComposerDraftMap();
+  const raw = String(text ?? "");
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    if (map[key]) {
+      delete map[key];
+      writeComposerDraftMap(map);
+    }
+    return;
+  }
+  map[key] = {
+    text: raw,
+    preview: trimmed.slice(0, 100),
+    updatedAt: Date.now(),
+    type: meta.type || (String(key).startsWith("group:") ? "group" : "dm"),
+    name: meta.name || map[key]?.name || "",
+    photo: meta.photo || map[key]?.photo || null,
+    href: meta.href || map[key]?.href || "",
+  };
+  writeComposerDraftMap(map);
+};
+
+export const clearComposerDraft = (key) => {
+  if (!key) return;
+  const map = readComposerDraftMap();
+  if (!map[key]) return;
+  delete map[key];
+  writeComposerDraftMap(map);
+};
+
+export const listComposerDrafts = () =>
+  Object.entries(readComposerDraftMap())
+    .map(([key, value]) => ({ key, ...(value || {}) }))
+    .filter((d) => String(d.text || "").trim())
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+export const countComposerDrafts = () => listComposerDrafts().length;
+
+/** WhatsApp-style draw colors (Send photo pencil). */
+export const ATTACH_DRAW_COLORS = [
+  "#8696a0",
+  "#ffffff",
+  "#53bdeb",
+  "#00a884",
+  "#ac85ff",
+  "#ff7a59",
+  "#ea4335",
+];
+
+/** Merge original image + draw strokes into a PNG File for upload. */
+export const composeDrawnImageFile = (sourceFile, previewUrl, strokes, displaySize) =>
+  new Promise((resolve, reject) => {
+    if (!sourceFile || !previewUrl) {
+      reject(new Error("Missing image."));
+      return;
+    }
+    const list = Array.isArray(strokes) ? strokes : [];
+    if (!list.length) {
+      resolve(sourceFile);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const out = document.createElement("canvas");
+        out.width = img.naturalWidth || img.width;
+        out.height = img.naturalHeight || img.height;
+        const ctx = out.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas unavailable."));
+          return;
+        }
+        ctx.drawImage(img, 0, 0);
+        const dw = Math.max(1, Number(displaySize?.width) || out.width);
+        const dh = Math.max(1, Number(displaySize?.height) || out.height);
+        const sx = out.width / dw;
+        const sy = out.height / dh;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        list.forEach((stroke) => {
+          const pts = stroke?.points || [];
+          if (pts.length < 2) return;
+          ctx.strokeStyle = stroke.color || "#53bdeb";
+          ctx.lineWidth = Math.max(1, (stroke.width || 4) * Math.max(sx, sy));
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x * sx, pts[0].y * sy);
+          for (let i = 1; i < pts.length; i += 1) {
+            ctx.lineTo(pts[i].x * sx, pts[i].y * sy);
+          }
+          ctx.stroke();
+        });
+        out.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(new Error("Failed to export drawing."));
+              return;
+            }
+            const base = String(sourceFile.name || "photo")
+              .replace(/\.[^.]+$/, "")
+              .trim() || "photo";
+            resolve(
+              new File([blob], `${base}-edit.png`, {
+                type: "image/png",
+                lastModified: Date.now(),
+              })
+            );
+          },
+          "image/png",
+          0.95
+        );
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error("Failed to load image for drawing."));
+    img.src = previewUrl;
+  });
+

@@ -32,6 +32,12 @@ import classnames from "classnames";
 import FeatherIcon from "feather-icons-react";
 import Picker from "emoji-picker-react";
 import { getCommAvatarSrc } from "../components/CommAvatar";
+import {
+  clearComposerDraft,
+  getComposerDraft,
+  groupDraftKey,
+  setComposerDraft,
+} from "../Messages/MessageAttachments";
 import MessageInfo, { useGroupMessageInfo } from "./MessageInfo";
 import { MessageReactionDetails } from "../Messages/MessageActions";
 import {
@@ -65,6 +71,7 @@ import {
   resolveUserAvatarUrl,
   sendChatMessage,
   subscribeChatPresence,
+  sendGroupChatTyping,
   uploadChatAttachments,
   fetchChatAttachmentBlob,
   toggleChatMessageReaction,
@@ -537,6 +544,7 @@ const Groups = () => {
   const pendingAttachKindRef = useRef(null);
   const messageScrollRef = useRef(null);
   const activeGroupRef = useRef(null);
+  const markReadInFlightRef = useRef(new Set());
 
   const [activeTab, setActiveTab] = useState("1");
   const [searchQuery, setSearchQuery] = useState("");
@@ -575,6 +583,10 @@ const Groups = () => {
   const [reactionDetailsMsg, setReactionDetailsMsg] = useState(null);
   const [reactionPickerPos, setReactionPickerPos] = useState(null);
   const [onlineUserIds, setOnlineUserIds] = useState(() => new Set());
+  /** groupId → Set of typing userIds */
+  const [groupTypingMap, setGroupTypingMap] = useState({});
+  const groupTypingTimersRef = useRef({});
+  const lastGroupTypingSentRef = useRef(0);
   const [actionToast, setActionToast] = useState("");
   const draftInputRef = useRef(null);
   const reactionPickerRef = useRef(null);
@@ -633,14 +645,16 @@ const Groups = () => {
   const {
     message: messageInfoMsg,
     members: messageInfoMembers,
+    onlineIds: messageInfoOnlineIds,
     loading: messageInfoLoading,
+    loadError: messageInfoLoadError,
     open: openMessageInfo,
     close: closeMessageInfo,
     clearIfMessage: clearMessageInfoIfMessage,
   } = useGroupMessageInfo({
     me,
     mergedMembers,
-    activeChatId: activeGroup?.chatId ?? null,
+    onlineUserIds,
     onBeforeOpen: () => setInfoOpen(false),
     onError: (msg) => showToast(msg),
   });
@@ -1116,6 +1130,66 @@ const Groups = () => {
     activeGroupRef.current = activeGroup;
   }, [activeGroup]);
 
+  // When demo user / member opens group (or returns to tab) → mark read for Message Info.
+  useEffect(() => {
+    const markOpenGroupRead = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const chatId = Number(activeGroupRef.current?.chatId);
+      if (!Number.isFinite(chatId) || chatId <= 0) return;
+      const key = String(chatId);
+      if (markReadInFlightRef.current.has(key)) return;
+      markReadInFlightRef.current.add(key);
+      try {
+        await markChatMessagesRead(chatId);
+        setGroupList((prev) =>
+          prev.map((g) =>
+            String(g.chatId) === key ? { ...g, unread: 0 } : g
+          )
+        );
+      } catch (readErr) {
+        console.warn("markChatMessagesRead (visibility) failed:", readErr);
+      } finally {
+        markReadInFlightRef.current.delete(key);
+      }
+    };
+
+    markOpenGroupRead();
+    const onVisibility = () => {
+      if (!document.hidden) markOpenGroupRead();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [activeGroup?.chatId]);
+
+  // Restore / persist composer draft per group (left without sending).
+  useEffect(() => {
+    if (!activeGroup?.groupId) {
+      setCurMessage("");
+      return;
+    }
+    setCurMessage(getComposerDraft(groupDraftKey(activeGroup.groupId)));
+  }, [activeGroup?.groupId]);
+
+  useEffect(() => {
+    if (!activeGroup?.groupId) return undefined;
+    const key = groupDraftKey(activeGroup.groupId);
+    const timer = window.setTimeout(() => {
+      setComposerDraft(key, curMessage, {
+        type: "group",
+        name: activeGroup?.name || "",
+        photo: activeGroup?.avatarUrl || activeGroup?.photoUrl || null,
+        href: "/communication/groups",
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    curMessage,
+    activeGroup?.groupId,
+    activeGroup?.name,
+    activeGroup?.avatarUrl,
+    activeGroup?.photoUrl,
+  ]);
+
   useEffect(() => {
     if (!activeGroup?.groupId) return;
     loadGroupDetails(activeGroup.groupId);
@@ -1157,6 +1231,50 @@ const Groups = () => {
           next.delete(id);
           return next;
         });
+        return;
+      }
+
+      if (event === "GroupTyping") {
+        const fromId = String(payload?.userId ?? payload?.UserId ?? "");
+        const gid = String(payload?.groupId ?? payload?.GroupId ?? "");
+        if (!fromId || !gid || String(fromId) === String(me?.userId)) return;
+        const isTyping = Boolean(
+          payload?.isTyping ?? payload?.IsTyping ?? true
+        );
+        const timerKey = `${gid}:${fromId}`;
+        const timers = groupTypingTimersRef.current;
+        if (timers[timerKey]) {
+          window.clearTimeout(timers[timerKey]);
+          delete timers[timerKey];
+        }
+        setGroupTypingMap((prev) => {
+          const current = new Set(prev[gid] || []);
+          if (isTyping) current.add(fromId);
+          else current.delete(fromId);
+          if (!current.size) {
+            if (!prev[gid]) return prev;
+            const next = { ...prev };
+            delete next[gid];
+            return next;
+          }
+          return { ...prev, [gid]: current };
+        });
+        if (isTyping) {
+          timers[timerKey] = window.setTimeout(() => {
+            setGroupTypingMap((prev) => {
+              const current = new Set(prev[gid] || []);
+              if (!current.has(fromId)) return prev;
+              current.delete(fromId);
+              if (!current.size) {
+                const next = { ...prev };
+                delete next[gid];
+                return next;
+              }
+              return { ...prev, [gid]: current };
+            });
+            delete timers[timerKey];
+          }, 3000);
+        }
         return;
       }
 
@@ -2247,6 +2365,56 @@ const Groups = () => {
     }
   };
 
+  const activeGroupTypingIds = useMemo(() => {
+    if (!activeGroup?.groupId) return [];
+    const set = groupTypingMap[String(activeGroup.groupId)];
+    return set ? Array.from(set) : [];
+  }, [activeGroup?.groupId, groupTypingMap]);
+
+  const activeGroupTypingLabel = useMemo(() => {
+    if (!activeGroupTypingIds.length) return "";
+    const names = activeGroupTypingIds
+      .map((id) => {
+        const member = mergedMembers.find(
+          (m) => String(m.userId ?? m.id) === String(id)
+        );
+        return (
+          member?.name ||
+          member?.fullName ||
+          member?.displayName ||
+          "Someone"
+        );
+      })
+      .filter(Boolean);
+    if (!names.length) return "typing...";
+    if (names.length === 1) return `${names[0]} typing...`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} typing...`;
+    return "Several people typing...";
+  }, [activeGroupTypingIds, mergedMembers]);
+
+  const notifyGroupTyping = useCallback(
+    (isTyping) => {
+      const groupId = Number(activeGroup?.groupId);
+      if (!Number.isFinite(groupId) || groupId <= 0) return;
+      const now = Date.now();
+      if (isTyping) {
+        if (now - lastGroupTypingSentRef.current < 1500) return;
+        lastGroupTypingSentRef.current = now;
+      } else {
+        lastGroupTypingSentRef.current = 0;
+      }
+      sendGroupChatTyping(groupId, isTyping);
+    },
+    [activeGroup?.groupId]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (!activeGroup?.groupId) return;
+      sendGroupChatTyping(Number(activeGroup.groupId), false);
+    };
+  }, [activeGroup?.groupId]);
+
   const sendMessage = async (e) => {
     e?.preventDefault?.();
     const text = curMessage.trim();
@@ -2258,6 +2426,10 @@ const Groups = () => {
     });
     if (ok) {
       setCurMessage("");
+      notifyGroupTyping(false);
+      if (activeGroup?.groupId) {
+        clearComposerDraft(groupDraftKey(activeGroup.groupId));
+      }
       setReplyTo(null);
       setEmojiPicker(false);
       setShowAttachMenu(false);
@@ -2608,6 +2780,12 @@ const Groups = () => {
         setSelectedMessageIds([msg.id]);
         break;
       case "info":
+        // Close message menu, then open WhatsApp-style Message Info panel.
+        try {
+          document.body.click();
+        } catch {
+          /* ignore */
+        }
         openMessageInfo(msg);
         break;
       case "delete":
@@ -3078,7 +3256,12 @@ const Groups = () => {
                                   <div className="flex-grow-1 overflow-hidden">
                                     <p className="text-truncate mb-0 fw-medium">{g.name}</p>
                                     <p className="text-truncate text-muted fs-12 mb-0">
-                                      {g.preview || g.groupCode || g.description || " "}
+                                      {(groupTypingMap[String(g.groupId)]?.size ||
+                                        0) > 0 ? (
+                                        <span className="text-success">typing...</span>
+                                      ) : (
+                                        g.preview || g.groupCode || g.description || " "
+                                      )}
                                     </p>
                                   </div>
                                   <div className="flex-shrink-0 text-end ms-1">
@@ -3178,7 +3361,9 @@ const Groups = () => {
                                         <small>
                                           {detailsLoading
                                             ? "Loading group..."
-                                            : `${mergedMembers.length || activeGroup.members || 0} Members`}
+                                            : activeGroupTypingLabel
+                                              ? activeGroupTypingLabel
+                                              : `${mergedMembers.length || activeGroup.members || 0} Members`}
                                         </small>
                                       </p>
                                     </div>
@@ -3836,6 +4021,17 @@ const Groups = () => {
                           Message copied
                         </div>
 
+                      {activeGroupTypingIds.length ? (
+                        <div
+                          className="comm-typing-indicator px-4 pb-1"
+                          aria-label="typing"
+                        >
+                          <span className="comm-typing-dot" />
+                          <span className="comm-typing-dot" />
+                          <span className="comm-typing-dot" />
+                        </div>
+                      ) : null}
+
                       <div className="chat-input-section p-3 p-lg-4">
                         {replyTo ? (
                           <div className="replymessage-block mb-2 d-flex align-items-start">
@@ -3948,7 +4144,13 @@ const Groups = () => {
                                   type="text"
                                   value={curMessage}
                                   onKeyDown={onKeyPress}
-                                  onChange={(e) => setCurMessage(e.target.value)}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    setCurMessage(value);
+                                    notifyGroupTyping(
+                                      Boolean(String(value).trim())
+                                    );
+                                  }}
                                   className="form-control chat-input bg-light border-light"
                                   placeholder="Type your message..."
                                   disabled={sending}
@@ -4061,6 +4263,7 @@ const Groups = () => {
         isOpen={infoOpen}
         direction="end"
         toggle={() => setInfoOpen(false)}
+        backdrop={false}
         className="offcanvas-end border-0 comm-group-info"
         tabIndex="-1"
       >
@@ -4830,7 +5033,9 @@ const Groups = () => {
       <MessageInfo
         message={messageInfoMsg}
         members={messageInfoMembers}
+        onlineIds={messageInfoOnlineIds}
         loading={messageInfoLoading}
+        loadError={messageInfoLoadError}
         onClose={closeMessageInfo}
       />
 

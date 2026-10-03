@@ -56,6 +56,12 @@ import {
   attachKindToMessageTypeId,
   pickUploadedAttachmentPath,
   validateAttachFileKind,
+  clearComposerDraft,
+  dmDraftKey,
+  getComposerDraft,
+  setComposerDraft,
+  ATTACH_DRAW_COLORS,
+  composeDrawnImageFile,
 } from "./MessageAttachments";
 import {
   getConfiguredProductId,
@@ -83,6 +89,7 @@ import {
   resolveChatAttachmentUrl,
   fetchChatAttachmentBlob,
   subscribeChatPresence,
+  sendChatTyping,
   markChatMessagesRead,
   ackChatMessageDelivered,
   getChatUnreadCountsByPeer,
@@ -675,6 +682,10 @@ const Messages = () => {
   const [actionToast, setActionToast] = useState("");
   /** userId strings currently Online via SignalR presence (in-memory hub). */
   const [onlineUserIds, setOnlineUserIds] = useState(() => new Set());
+  /** peer userId → typing (WhatsApp-style) */
+  const [typingPeerIds, setTypingPeerIds] = useState(() => new Set());
+  const typingClearTimersRef = useRef({});
+  const lastTypingSentRef = useRef(0);
   const [hubConnected, setHubConnected] = useState(false);
   const [focusMessageId, setFocusMessageId] = useState(null);
   const [msgMenu, setMsgMenu] = useState(null);
@@ -717,6 +728,14 @@ const Messages = () => {
   const [pendingAttach, setPendingAttach] = useState(null); // { file, kind, previewUrl }
   const [attachCaption, setAttachCaption] = useState("");
   const attachCaptionRef = useRef(null);
+  /** WhatsApp-style pencil draw on photo before send */
+  const [imageDrawMode, setImageDrawMode] = useState(false);
+  const [drawColor, setDrawColor] = useState(ATTACH_DRAW_COLORS[2]);
+  const [drawStrokes, setDrawStrokes] = useState([]);
+  const drawCanvasRef = useRef(null);
+  const previewImgRef = useRef(null);
+  const drawingStrokeRef = useRef(null);
+  const isDrawingRef = useRef(false);
   const [maxFileSizeMB, setMaxFileSizeMB] = useState(DEFAULT_CHAT_MAX_FILE_SIZE_MB);
   const [avatarSaving, setAvatarSaving] = useState(false);
   const [selfProfileLoading, setSelfProfileLoading] = useState(false);
@@ -767,6 +786,29 @@ const Messages = () => {
   const activeChat =
     chatList.find((c) => String(c.id) === String(activeChatId)) || null;
 
+  // Restore / persist composer draft per direct chat (left without sending).
+  useEffect(() => {
+    if (!activeChatId) {
+      setDraft("");
+      return;
+    }
+    setDraft(getComposerDraft(dmDraftKey(activeChatId)));
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!activeChatId) return undefined;
+    const key = dmDraftKey(activeChatId);
+    const timer = window.setTimeout(() => {
+      setComposerDraft(key, draft, {
+        type: "dm",
+        name: activeChat?.name || activeChat?.fullName || "",
+        photo: activeChat?.photo || activeChat?.avatar || null,
+        href: "/communication/messages",
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [draft, activeChatId, activeChat?.name, activeChat?.fullName, activeChat?.photo, activeChat?.avatar]);
+
   const resolvePresenceStatus = (chat) => {
     if (!chat) return "offline";
     // Logged-in user on Messages is online — Velzon hardcodes `.online` for self.
@@ -776,6 +818,34 @@ const Messages = () => {
   };
 
   const activePresenceStatus = resolvePresenceStatus(activeChat);
+  const peerIsTyping =
+    Boolean(activeChat) &&
+    !activeChat.isSelf &&
+    typingPeerIds.has(String(activeChat.id));
+
+  const notifyPeerTyping = useCallback(
+    (isTyping) => {
+      if (!activeChat || activeChat.isSelf) return;
+      const peerId = Number(activeChat.id);
+      if (!Number.isFinite(peerId) || peerId <= 0) return;
+      const now = Date.now();
+      if (isTyping) {
+        if (now - lastTypingSentRef.current < 1500) return;
+        lastTypingSentRef.current = now;
+      } else {
+        lastTypingSentRef.current = 0;
+      }
+      sendChatTyping(peerId, isTyping);
+    },
+    [activeChat]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (!activeChatId) return;
+      sendChatTyping(Number(activeChatId), false);
+    };
+  }, [activeChatId]);
 
   const upgradeThreadStatuses = (peerUserId, predicate, nextStatus) => {
     const key = String(peerUserId);
@@ -905,7 +975,50 @@ const Messages = () => {
           next.delete(id);
           return next;
         });
+        setTypingPeerIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         // Do not downgrade delivered/read ticks when peer goes offline.
+        return;
+      }
+      if (event === "UserTyping") {
+        const fromId = String(payload?.userId ?? payload?.UserId ?? "");
+        if (!fromId || String(fromId) === String(myUserId)) return;
+        const isTyping = Boolean(
+          payload?.isTyping ?? payload?.IsTyping ?? true
+        );
+        const timers = typingClearTimersRef.current;
+        if (timers[fromId]) {
+          window.clearTimeout(timers[fromId]);
+          delete timers[fromId];
+        }
+        if (isTyping) {
+          setTypingPeerIds((prev) => {
+            if (prev.has(fromId)) return prev;
+            const next = new Set(prev);
+            next.add(fromId);
+            return next;
+          });
+          timers[fromId] = window.setTimeout(() => {
+            setTypingPeerIds((prev) => {
+              if (!prev.has(fromId)) return prev;
+              const next = new Set(prev);
+              next.delete(fromId);
+              return next;
+            });
+            delete timers[fromId];
+          }, 3000);
+        } else {
+          setTypingPeerIds((prev) => {
+            if (!prev.has(fromId)) return prev;
+            const next = new Set(prev);
+            next.delete(fromId);
+            return next;
+          });
+        }
         return;
       }
       if (event === "ConnectionState") {
@@ -1904,6 +2017,8 @@ const Messages = () => {
     const ok = await sendOutboundMessage(text, { messageTypeId: 1 });
     if (ok) {
       setDraft("");
+      notifyPeerTyping(false);
+      if (activeChatId) clearComposerDraft(dmDraftKey(activeChatId));
       setemojiPicker(false);
     }
   };
@@ -1930,6 +2045,108 @@ const Messages = () => {
       return null;
     });
     setAttachCaption("");
+    setImageDrawMode(false);
+    setDrawStrokes([]);
+    drawingStrokeRef.current = null;
+    isDrawingRef.current = false;
+  };
+
+  const syncAttachDrawCanvas = useCallback(() => {
+    const img = previewImgRef.current;
+    const canvas = drawCanvasRef.current;
+    if (!img || !canvas) return;
+    const w = Math.max(1, img.clientWidth || 0);
+    const h = Math.max(1, img.clientHeight || 0);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const all = [
+      ...drawStrokes,
+      ...(drawingStrokeRef.current ? [drawingStrokeRef.current] : []),
+    ];
+    all.forEach((stroke) => {
+      const pts = stroke?.points || [];
+      if (pts.length < 2) return;
+      ctx.strokeStyle = stroke.color || drawColor;
+      ctx.lineWidth = stroke.width || 4;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i += 1) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.stroke();
+    });
+  }, [drawStrokes, drawColor]);
+
+  useEffect(() => {
+    syncAttachDrawCanvas();
+  }, [syncAttachDrawCanvas, imageDrawMode, pendingAttach?.previewUrl]);
+
+  const getDrawPoint = (event) => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = event.clientX ?? event.touches?.[0]?.clientX;
+    const clientY = event.clientY ?? event.touches?.[0]?.clientY;
+    if (clientX == null || clientY == null) return null;
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    };
+  };
+
+  const handleDrawPointerDown = (event) => {
+    if (!imageDrawMode) return;
+    event.preventDefault();
+    const point = getDrawPoint(event);
+    if (!point) return;
+    isDrawingRef.current = true;
+    drawingStrokeRef.current = {
+      color: drawColor,
+      width: 4,
+      points: [point],
+    };
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* ignore */
+    }
+    syncAttachDrawCanvas();
+  };
+
+  const handleDrawPointerMove = (event) => {
+    if (!imageDrawMode || !isDrawingRef.current || !drawingStrokeRef.current) {
+      return;
+    }
+    event.preventDefault();
+    const point = getDrawPoint(event);
+    if (!point) return;
+    drawingStrokeRef.current.points.push(point);
+    syncAttachDrawCanvas();
+  };
+
+  const handleDrawPointerUp = (event) => {
+    if (!isDrawingRef.current) return;
+    event.preventDefault();
+    isDrawingRef.current = false;
+    const stroke = drawingStrokeRef.current;
+    drawingStrokeRef.current = null;
+    if (stroke?.points?.length > 1) {
+      setDrawStrokes((prev) => [...prev, stroke]);
+    } else {
+      syncAttachDrawCanvas();
+    }
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      /* ignore */
+    }
   };
 
   const handleAttachFileChange = (event) => {
@@ -1959,16 +2176,28 @@ const Messages = () => {
         : null;
     setPendingAttach({ file, kind, previewUrl });
     setAttachCaption("");
+    setImageDrawMode(false);
+    setDrawStrokes([]);
     window.setTimeout(() => attachCaptionRef.current?.focus(), 50);
   };
 
   const sendPendingAttach = async () => {
     if (!pendingAttach?.file || uploading || sending) return;
-    const { file, kind } = pendingAttach;
-    const body = formatAttachMessageBody(kind, file, attachCaption);
+    const { file, kind, previewUrl } = pendingAttach;
     setUploading(true);
     try {
-      const uploaded = await uploadChatAttachments(file);
+      let uploadFile = file;
+      const isImage = String(file.type || "").startsWith("image/");
+      if (isImage && drawStrokes.length && previewUrl) {
+        const canvas = drawCanvasRef.current;
+        const img = previewImgRef.current;
+        uploadFile = await composeDrawnImageFile(file, previewUrl, drawStrokes, {
+          width: canvas?.width || img?.clientWidth,
+          height: canvas?.height || img?.clientHeight,
+        });
+      }
+      const body = formatAttachMessageBody(kind, uploadFile, attachCaption);
+      const uploaded = await uploadChatAttachments(uploadFile);
       const path = pickUploadedAttachmentPath(uploaded);
 
       if (!path) {
@@ -2065,20 +2294,39 @@ const Messages = () => {
         break;
       }
       case "export": {
-        const rows = getActiveMessages()
-          .map((msg) => {
-            const who = msg.from === "me" ? "You" : activeChat.name;
-            const body = msg.type === "file" ? `[File] ${msg.fileName}` : msg.text;
-            return `[${msg.time || "-"}] ${who}: ${body || ""}`;
-          })
-          .join("\n");
+        const msgs = getActiveMessages();
+        const dateFormat = getChatDateFormat();
+        const lines = [];
+        let lastDayKey = "";
+        msgs.forEach((msg) => {
+          const dayKey = getMessageDayKey(msg);
+          if (dayKey && dayKey !== lastDayKey) {
+            if (lines.length) lines.push("");
+            const dayLabel = formatChatDayLabel(
+              msg.sentAt || msg?.raw?.sentAt || msg?.raw?.SentAt,
+              dateFormat
+            );
+            lines.push(`--- ${dayLabel || dayKey} ---`);
+            lastDayKey = dayKey;
+          }
+          const who = msg.from === "me" ? "You" : activeChat.name;
+          const body =
+            msg.type === "file" ? `[File] ${msg.fileName}` : msg.text;
+          lines.push(`[${msg.time || "-"}] ${who}: ${body || ""}`);
+        });
         const blob = new Blob(
-          [`Chat with ${activeChat.name}\n\n${rows || "No messages"}\n`],
+          [
+            `Chat with ${activeChat.name}\n\n${
+              lines.length ? lines.join("\n") : "No messages"
+            }\n`,
+          ],
           { type: "text/plain;charset=utf-8" }
         );
         const link = document.createElement("a");
         link.href = URL.createObjectURL(blob);
-        link.download = `chat-${String(activeChat.name).replace(/\s+/g, "-").toLowerCase()}.txt`;
+        link.download = `chat-${String(activeChat.name)
+          .replace(/\s+/g, "-")
+          .toLowerCase()}.txt`;
         link.click();
         URL.revokeObjectURL(link.href);
         showToast("Chat exported");
@@ -3078,7 +3326,12 @@ const Messages = () => {
                                   <div className="flex-grow-1 overflow-hidden">
                                     <p className="text-truncate mb-0">{chat.name}</p>
                                     <p className="text-truncate mb-0 fs-12 text-muted chat-user-message">
-                                      {chat.preview}
+                                      {typingPeerIds.has(String(chat.id)) &&
+                                      !chat.isSelf ? (
+                                        <span className="text-success">typing...</span>
+                                      ) : (
+                                        chat.preview
+                                      )}
                                     </p>
                                   </div>
                                   <div className="flex-shrink-0 ms-2 text-end">
@@ -3203,9 +3456,11 @@ const Messages = () => {
                                       <small>
                                         {activeChat.isSelf
                                           ? "Message yourself"
-                                          : activePresenceStatus === "online"
-                                            ? "Online"
-                                            : "Offline"}
+                                          : peerIsTyping
+                                            ? "typing..."
+                                            : activePresenceStatus === "online"
+                                              ? "Online"
+                                              : "Offline"}
                                       </small>
                                     </p>
                                   </div>
@@ -3702,6 +3957,17 @@ const Messages = () => {
                         </div>
                       </div>
 
+                      {peerIsTyping ? (
+                        <div
+                          className="comm-typing-indicator px-4 pb-1"
+                          aria-label="typing"
+                        >
+                          <span className="comm-typing-dot" />
+                          <span className="comm-typing-dot" />
+                          <span className="comm-typing-dot" />
+                        </div>
+                      ) : null}
+
                       <div className="chat-input-section p-3 p-lg-4">
                         {replyTo ? (
                           <div className="replymessage-block mb-2 d-flex align-items-start">
@@ -3802,7 +4068,11 @@ const Messages = () => {
                                 ref={draftInputRef}
                                 type="text"
                                 value={draft}
-                                onChange={(e) => setDraft(e.target.value)}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setDraft(value);
+                                  notifyPeerTyping(Boolean(String(value).trim()));
+                                }}
                                 className="form-control chat-input bg-light border-light"
                                 placeholder={
                                   replyTo
@@ -3914,12 +4184,85 @@ const Messages = () => {
         <ModalBody>
           {pendingAttach?.previewUrl &&
           String(pendingAttach.file?.type || "").startsWith("image/") ? (
-            <div className="comm-attach-caption-preview mb-3">
-              <img
-                src={pendingAttach.previewUrl}
-                alt={pendingAttach.file?.name || "Preview"}
-              />
-            </div>
+            <>
+              <div className="comm-attach-draw-toolbar mb-2">
+                <button
+                  type="button"
+                  className={classnames("comm-attach-draw-tool", {
+                    active: imageDrawMode,
+                  })}
+                  title="Draw"
+                  aria-label="Draw"
+                  disabled={uploading}
+                  onClick={() => setImageDrawMode((v) => !v)}
+                >
+                  <i className="ri-pencil-fill"></i>
+                </button>
+                <button
+                  type="button"
+                  className="comm-attach-draw-tool"
+                  title="Undo"
+                  aria-label="Undo"
+                  disabled={uploading || !drawStrokes.length}
+                  onClick={() =>
+                    setDrawStrokes((prev) => prev.slice(0, -1))
+                  }
+                >
+                  <i className="ri-arrow-go-back-line"></i>
+                </button>
+                <button
+                  type="button"
+                  className="comm-attach-draw-tool"
+                  title="Clear drawing"
+                  aria-label="Clear drawing"
+                  disabled={uploading || !drawStrokes.length}
+                  onClick={() => setDrawStrokes([])}
+                >
+                  <i className="ri-close-circle-line"></i>
+                </button>
+              </div>
+              <div className="comm-attach-caption-preview mb-2">
+                <div className="comm-attach-draw-stage">
+                  <img
+                    ref={previewImgRef}
+                    src={pendingAttach.previewUrl}
+                    alt={pendingAttach.file?.name || "Preview"}
+                    onLoad={syncAttachDrawCanvas}
+                  />
+                  <canvas
+                    ref={drawCanvasRef}
+                    className={classnames("comm-attach-draw-canvas", {
+                      "is-drawing": imageDrawMode,
+                    })}
+                    onPointerDown={handleDrawPointerDown}
+                    onPointerMove={handleDrawPointerMove}
+                    onPointerUp={handleDrawPointerUp}
+                    onPointerCancel={handleDrawPointerUp}
+                    onPointerLeave={handleDrawPointerUp}
+                  />
+                </div>
+              </div>
+              {imageDrawMode ? (
+                <div className="comm-attach-draw-colors mb-3">
+                  {ATTACH_DRAW_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={classnames("comm-attach-draw-color", {
+                        active: drawColor === color,
+                      })}
+                      style={{ backgroundColor: color }}
+                      title={color}
+                      aria-label={`Color ${color}`}
+                      disabled={uploading}
+                      onClick={() => setDrawColor(color)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="mb-3" />
+              )}
+            </>
           ) : pendingAttach?.previewUrl &&
             String(pendingAttach.file?.type || "").startsWith("video/") ? (
             <div className="comm-attach-caption-preview mb-3">

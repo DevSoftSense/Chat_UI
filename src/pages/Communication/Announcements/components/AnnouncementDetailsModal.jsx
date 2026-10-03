@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Modal,
@@ -19,8 +19,10 @@ import {
 import {
   apiErrorMessage,
   formatAnnouncementDate,
+  resolveAnnouncementStatus,
   statusBadgeClass,
 } from "../utils/announcementUtils";
+import { STATUS_TICK_MS } from "../constants/announcementConstants";
 
 const AnnouncementDetailsModal = ({
   isOpen,
@@ -34,7 +36,15 @@ const AnnouncementDetailsModal = ({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [item, setItem] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
   const me = useMemo(() => getSessionUserIdentity(), []);
+  const autoMarkedRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const id = setInterval(() => setNow(Date.now()), STATUS_TICK_MS);
+    return () => clearInterval(id);
+  }, [isOpen]);
 
   const load = async () => {
     if (!announcementId) return;
@@ -52,13 +62,46 @@ const AnnouncementDetailsModal = ({
   };
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      autoMarkedRef.current = null;
+      return;
+    }
     if (announcementId) load();
     else {
       setItem(null);
       setError("");
     }
   }, [isOpen, announcementId]);
+
+  // Opening details = viewed → mark read (dashboard unread count decreases)
+  useEffect(() => {
+    if (!isOpen || !announcementId || !item) return;
+    const alreadyRead = Boolean(
+      item.isReadByCurrentUser ?? item.IsReadByCurrentUser
+    );
+    if (alreadyRead) return;
+    const key = String(announcementId);
+    if (autoMarkedRef.current === key) return;
+    autoMarkedRef.current = key;
+    let cancelled = false;
+    (async () => {
+      try {
+        await markAnnouncementRead(announcementId);
+        if (cancelled) return;
+        setItem((prev) =>
+          prev
+            ? { ...prev, isReadByCurrentUser: true, IsReadByCurrentUser: true }
+            : prev
+        );
+        onChanged?.();
+      } catch {
+        autoMarkedRef.current = null;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, announcementId, item]);
 
   const isPoster =
     item &&
@@ -93,7 +136,7 @@ const AnnouncementDetailsModal = ({
     }
   };
 
-  const statusName = item?.statusName ?? item?.StatusName ?? "";
+  const statusName = resolveAnnouncementStatus(item, now);
   const badge = statusBadgeClass(statusName);
   const posterName = item?.postedByName ?? item?.PostedByName ?? "User";
   const postedBy = item?.postedBy ?? item?.PostedBy;

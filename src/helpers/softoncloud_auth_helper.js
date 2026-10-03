@@ -122,7 +122,7 @@ const toPrefBool = (value, fallback = true) => {
 
 /**
  * Settings → Notifications delivery mode.
- * all | browser | bell_browser (Notification ball with browser)
+ * all (Bell) | browser | bell_browser (Bell + Browser)
  */
 export const normalizeNotifMode = (value, fallback = "all") => {
   if (value === true || value === 1) return "all";
@@ -133,13 +133,22 @@ export const normalizeNotifMode = (value, fallback = "all") => {
     .replace(/[\s+]+/g, "_");
   if (!s) return fallback;
   if (s === "all" || s === "true" || s === "on") return "all";
+  // Bell only (header notification bell)
+  if (
+    s === "bell" ||
+    s === "ball" ||
+    s === "notification_ball" ||
+    s === "notification_bell"
+  ) {
+    return "all";
+  }
   if (s === "browser" || s === "desktop") return "browser";
+  // Bell + Browser
   if (
     s === "bell_browser" ||
-    s === "bell" ||
-    s === "notification_ball" ||
-    s === "notification_ball_with_browser" ||
     s === "ball_browser" ||
+    s === "notification_ball_with_browser" ||
+    s === "notification_bell_with_browser" ||
     s === "bell+browser"
   ) {
     return "bell_browser";
@@ -148,23 +157,43 @@ export const normalizeNotifMode = (value, fallback = "all") => {
   return fallback;
 };
 
-/** Header notification bell (ball) shows this channel? */
+/** Header notification bell shows this channel? */
 export const notifModeShowsBell = (mode) => {
   const m = normalizeNotifMode(mode);
-  // All = ball only; Ball + Browser = both
+  // Bell only; Bell + Browser = both
   return m === "all" || m === "bell_browser";
 };
 
 /** Browser desktop Notification API shows this channel? */
 export const notifModeShowsBrowser = (mode) => {
   const m = normalizeNotifMode(mode);
-  // Browser = browser only; Ball + Browser = both (All = ball only)
+  // Browser only; Bell + Browser = both (Bell alone = no browser popup)
   return m === "browser" || m === "bell_browser";
 };
 
 const readChatRuntimePrefsRaw = () => {
   try {
-    const raw = sessionStorage.getItem(CHAT_RUNTIME_PREFS_KEY);
+    // Prefer localStorage so Bell/Browser modes survive refresh
+    let raw = null;
+    try {
+      raw = localStorage.getItem(CHAT_RUNTIME_PREFS_KEY);
+    } catch {
+      raw = null;
+    }
+    if (!raw) {
+      try {
+        raw = sessionStorage.getItem(CHAT_RUNTIME_PREFS_KEY);
+        if (raw) {
+          try {
+            localStorage.setItem(CHAT_RUNTIME_PREFS_KEY, raw);
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        raw = null;
+      }
+    }
     if (!raw) return { ...DEFAULT_CHAT_RUNTIME_PREFS };
     const parsed = JSON.parse(raw);
     return {
@@ -201,8 +230,14 @@ export const setChatRuntimePrefs = (partial) => {
   next.desktopEnabled = toPrefBool(next.desktopEnabled, true);
   next.requestReadReceipt = toPrefBool(next.requestReadReceipt, true);
   next.autoSaveDraft = toPrefBool(next.autoSaveDraft, false);
+  const json = JSON.stringify(next);
   try {
-    sessionStorage.setItem(CHAT_RUNTIME_PREFS_KEY, JSON.stringify(next));
+    localStorage.setItem(CHAT_RUNTIME_PREFS_KEY, json);
+  } catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage.setItem(CHAT_RUNTIME_PREFS_KEY, json);
   } catch {
     /* ignore */
   }
@@ -373,11 +408,11 @@ export const getChatNotificationMode = (payload) => {
   return normalizeNotifMode(prefs.messageReceived);
 };
 
-/** Header bell (notification ball) — All / Notification ball with browser. */
+/** Header bell — Bell / Bell + Browser (Settings). */
 export const isChatNotificationAllowed = (payload) =>
   notifModeShowsBell(getChatNotificationMode(payload));
 
-/** Browser desktop popup — Browser / Ball + Browser (Settings). */
+/** Browser desktop popup — Browser / Bell + Browser (Settings). */
 export const isChatBrowserNotificationAllowed = (payload) =>
   notifModeShowsBrowser(getChatNotificationMode(payload));
 
@@ -506,8 +541,6 @@ const maybeShowDesktopChatNotification = (payload) => {
   if (prefs.desktopEnabled === false) return;
   if (typeof Notification === "undefined") return;
   if (Notification.permission !== "granted") return;
-  // OS popup only when tab is in background (still visible after user returns).
-  if (typeof document !== "undefined" && !document.hidden) return;
 
   const notificationId =
     payload?.notificationId ?? payload?.NotificationId ?? null;
@@ -618,6 +651,8 @@ const bindChatHubHandlers = (connection) => {
   connection.off("GroupMemberAdminChanged");
   connection.off("UserStatusChanged");
   connection.off("UserStatuses");
+  connection.off("UserTyping");
+  connection.off("GroupTyping");
 
   connection.on("UserOnline", (userId) => {
     notifyChatPresence("UserOnline", userId);
@@ -633,6 +668,12 @@ const bindChatHubHandlers = (connection) => {
   });
   connection.on("UserStatuses", (payload) => {
     notifyChatPresence("UserStatuses", payload);
+  });
+  connection.on("UserTyping", (payload) => {
+    notifyChatPresence("UserTyping", payload);
+  });
+  connection.on("GroupTyping", (payload) => {
+    notifyChatPresence("GroupTyping", payload);
   });
   // Push after Send Message API saves (ChatController → ReceiveMessage)
   connection.on("ReceiveMessage", (payload) => {
@@ -856,6 +897,33 @@ export const leaveChatGroupHub = async (groupId) => {
     await connection.invoke("LeaveGroupChat", parsed);
   } catch {
     // Ignore — connection may already be down.
+  }
+};
+
+/** 1:1 WhatsApp-style typing → peer receives UserTyping. */
+export const sendChatTyping = async (peerUserId, isTyping) => {
+  const parsed = Number(peerUserId);
+  if (!Number.isFinite(parsed) || parsed <= 0) return;
+  try {
+    const connection = await ensureChatHubConnection();
+    if (connection?.state !== signalR.HubConnectionState.Connected) return;
+    await connection.invoke("SendTyping", parsed, Boolean(isTyping));
+  } catch {
+    /* hub may be older / offline */
+  }
+};
+
+/** Group WhatsApp-style typing → other members receive GroupTyping. */
+export const sendGroupChatTyping = async (groupId, isTyping) => {
+  const parsed = Number(groupId);
+  if (!Number.isFinite(parsed) || parsed <= 0) return;
+  try {
+    const connection = await ensureChatHubConnection();
+    if (connection?.state !== signalR.HubConnectionState.Connected) return;
+    // Do not JoinGroupChat here — fiscalYearId missing was throwing HubException.
+    await connection.invoke("SendGroupTyping", parsed, Boolean(isTyping));
+  } catch {
+    /* hub may be older / offline */
   }
 };
 
@@ -3198,6 +3266,22 @@ export const getUnreadAnnouncementCount = async () => {
       chatTenantRequestConfig(ctx)
     );
     return Number(response?.unreadCount ?? response?.UnreadCount ?? 0);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+// ─── Dashboard (Chat_Api /api/chat/dashboard) ─────────────────────────────────
+
+/** GET /api/chat/dashboard — full communication dashboard (real DB aggregation). */
+export const getChatDashboard = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    return await axios.get(
+      `${base}${url.CHAT_DASHBOARD}`,
+      chatTenantRequestConfig(ctx)
+    );
   } catch (error) {
     rethrowChatError(error);
   }
