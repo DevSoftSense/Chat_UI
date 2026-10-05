@@ -1456,10 +1456,34 @@ export const getChatApiContext = () => {
   };
 };
 
-const getChatApiBaseUrl = () =>
-  String(appConfig.CHAT_API_URL || process.env.REACT_APP_CHAT_API_URL || "")
+const LOCAL_CHAT_API_URL = "https://localhost:7008";
+const LIVE_CHAT_API_URL = "https://chatapi.softoncloud.com";
+
+/**
+ * Local UI (localhost / 127.0.0.1) → local Chat API.
+ * Live UI (chat.softoncloud.com, etc.) → live Chat API.
+ * This runtime check wins over any baked env value.
+ */
+const getChatApiBaseUrl = () => {
+  if (typeof window !== "undefined") {
+    const host = String(window.location.hostname || "").toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1") {
+      return LOCAL_CHAT_API_URL;
+    }
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    return LOCAL_CHAT_API_URL;
+  }
+
+  return String(
+    appConfig.CHAT_API_URL ||
+      process.env.REACT_APP_CHAT_API_URL ||
+      LIVE_CHAT_API_URL
+  )
     .trim()
     .replace(/\/$/, "");
+};
 
 /** Build absolute URL for a chat attachment web path (e.g. /chat-attachments/...). */
 export const resolveChatAttachmentUrl = (relativePath) => {
@@ -1471,16 +1495,38 @@ export const resolveChatAttachmentUrl = (relativePath) => {
   return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 };
 
+const redirectToLogin = (reason) => {
+  if (typeof window === "undefined") return;
+  if (String(window.location.pathname || "").includes("/login")) return;
+  try {
+    sessionStorage.removeItem("authUser");
+    localStorage.removeItem("authToken");
+  } catch {
+    /* ignore */
+  }
+  if (reason) {
+    try {
+      sessionStorage.setItem("loginRedirectReason", String(reason));
+    } catch {
+      /* ignore */
+    }
+  }
+  window.location.assign("/login");
+};
+
 const requireChatContext = () => {
   const ctx = getChatApiContext();
   if (!ctx.token) {
+    redirectToLogin("Authentication token missing. Please sign in again.");
     throw new Error("Authentication token missing. Please sign in again.");
   }
   if (!ctx.userId) {
+    redirectToLogin("Logged-in user id missing from session/JWT.");
     throw new Error("Logged-in user id missing from session/JWT.");
   }
   if (!ctx.orgId) {
-    throw new Error("Organisation id missing from session/JWT.");
+    redirectToLogin("Organization ID missing. Please sign in with Organization ID.");
+    throw new Error("Organization ID missing. Please sign in with Organization ID.");
   }
   if (!ctx.appId) {
     throw new Error("Product/app id missing. Check REACT_APP_PRODUCT_ID.");
@@ -1517,12 +1563,21 @@ const chatAuthHeaders = (ctx) => {
 
 const rethrowChatError = (error) => {
   if (error?.status === 401) {
+    redirectToLogin(
+      "Session expired or Chat API rejected the token. Please sign in again."
+    );
     throw {
       ...error,
       message:
         "Session expired or Chat API rejected the token. Please sign in again.",
     };
   }
+
+  const msg = String(error?.message || error?.data?.message || "");
+  if (/orgId and appId are required|org_id and app_id are required|Organization ID missing/i.test(msg)) {
+    redirectToLogin(msg || "Organization ID validation failed. Please sign in again.");
+  }
+
   throw error;
 };
 

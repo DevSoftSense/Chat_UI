@@ -51,7 +51,16 @@ const Login = (props) => {
     validationSchema: Yup.object({
       organizationId: Yup.string()
         .trim()
-        .required("Please Enter Your Organization ID"),
+        .required("Please Enter Your Organization ID")
+        .matches(/^\d+$/, "Organization ID must be a number")
+        .test(
+          "positive-org",
+          "Organization ID must be greater than 0",
+          (value) => {
+            const n = parseInt(String(value || "").trim(), 10);
+            return Number.isFinite(n) && n > 0;
+          }
+        ),
       email: Yup.string()
         .trim()
         .email("Please Enter a Valid Email")
@@ -59,10 +68,14 @@ const Login = (props) => {
       password: Yup.string().required("Please Enter Your Temporary Password"),
     }),
     onSubmit: (values) => {
+      const orgId = String(values.organizationId || "").trim();
+      if (!orgId || !/^\d+$/.test(orgId) || parseInt(orgId, 10) <= 0) {
+        return;
+      }
       dispatch(
         loginUser(
           {
-            organizationId: values.organizationId.trim(),
+            organizationId: orgId,
             email: values.email.trim(),
             password: values.password,
             rememberMe: Boolean(values.rememberMe),

@@ -35,6 +35,19 @@ axios.interceptors.response.use(
         break;
       case 401:
         message = apiMessage || "Invalid credentials";
+        // SoftOnCloud / Chat API unauthorized → force re-login (skip on login page)
+        if (
+          typeof window !== "undefined" &&
+          !String(window.location.pathname || "").includes("/login")
+        ) {
+          try {
+            sessionStorage.removeItem("authUser");
+            localStorage.removeItem("authToken");
+          } catch {
+            /* ignore */
+          }
+          window.location.assign("/login");
+        }
         break;
       case 403:
         message = denialReason
