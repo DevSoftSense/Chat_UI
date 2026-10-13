@@ -7,6 +7,7 @@ import Header from './Header';
 import Sidebar from './Sidebar';
 import Footer from './Footer';
 import RightSidebar from '../Components/Common/RightSidebar';
+import { ChatPermissionsProvider } from '../contexts/ChatPermissionsContext';
 
 //import actions
 import {
@@ -133,7 +134,7 @@ const Layout = (props) => {
     }, [sidebarVisibilitytype, layoutType]);
 
     return (
-        <React.Fragment>
+        <ChatPermissionsProvider>
             <div id="layout-wrapper">
                 <Header
                     headerClass={headerClass}
@@ -148,8 +149,7 @@ const Layout = (props) => {
                 </div>
             </div>
             <RightSidebar />
-        </React.Fragment>
-
+        </ChatPermissionsProvider>
     );
 };
 

@@ -865,6 +865,33 @@ export const subscribeChatPresence = (listener) => {
   };
 };
 
+/** All User Communication: join comm-observers SignalR room (observer JWT only). */
+export const joinCommObserverWatch = async () => {
+  try {
+    const ctx = requireChatContext();
+    const connection = await ensureChatHubConnection();
+    if (connection?.state !== signalR.HubConnectionState.Connected) return;
+    await connection.invoke(
+      "JoinCommObserverWatch",
+      ctx.orgId,
+      ctx.appId
+    );
+  } catch {
+    // Live AUC watch is best-effort; REST history still loads.
+  }
+};
+
+/** Leave All User Communication observer SignalR room. */
+export const leaveCommObserverWatch = async () => {
+  try {
+    const connection = await ensureChatHubConnection();
+    if (connection?.state !== signalR.HubConnectionState.Connected) return;
+    await connection.invoke("LeaveCommObserverWatch");
+  } catch {
+    // Ignore — connection may already be down.
+  }
+};
+
 /** Join SignalR group:{groupId} after hub validates active membership. */
 export const joinChatGroupHub = async (groupId) => {
   const parsed = Number(groupId);
@@ -1277,6 +1304,319 @@ const firstPositiveNumber = (...candidates) => {
   return null;
 };
 
+/** SoftOnCloud userType: "prime" / "sub" / "admin" → PRIME / SUB / ADMIN */
+export const normalizeCommUserType = (value) => {
+  if (value == null) return "";
+  return String(value).trim().toUpperCase();
+};
+
+/**
+ * Visibility from Chat DB setting AllUserCommunicationUserType
+ * (tab_organisation_setting) — NOT .env.
+ * Supports one or more types, comma-separated:
+ *   PRIME          → only PRIME
+ *   ADMIN          → only ADMIN
+ *   PRIME,ADMIN    → PRIME and ADMIN (SUB still hidden)
+ */
+let cachedRequiredCommUserTypes = null;
+let cachedRequiredCommUserTypesAt = 0;
+const REQUIRED_TYPES_CACHE_MS = 30_000;
+
+/** GET /api/chat/all-user-communication/required-user-types */
+export const getAllUserCommunicationRequiredUserTypes = async ({
+  forceRefresh = false,
+} = {}) => {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    Array.isArray(cachedRequiredCommUserTypes) &&
+    now - cachedRequiredCommUserTypesAt < REQUIRED_TYPES_CACHE_MS
+  ) {
+    return cachedRequiredCommUserTypes;
+  }
+
+  try {
+    const ctx = requireChatContext();
+    const base = getChatApiBaseUrl();
+    const params = tenantQuery(ctx);
+    const query = Object.keys(params)
+      .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+      .join("&");
+
+    const response = await axios.get(
+      `${base}/api/chat/all-user-communication/required-user-types?${query}`,
+      { headers: chatAuthHeaders(ctx) }
+    );
+
+    const raw =
+      response?.requiredUserTypes ??
+      response?.RequiredUserTypes ??
+      response?.data?.requiredUserTypes ??
+      [];
+    const list = (Array.isArray(raw) ? raw : [raw])
+      .map((s) => normalizeCommUserType(s))
+      .filter(Boolean);
+
+    cachedRequiredCommUserTypes = list.length ? list : ["PRIME"];
+  } catch {
+    cachedRequiredCommUserTypes = cachedRequiredCommUserTypes?.length
+      ? cachedRequiredCommUserTypes
+      : ["PRIME"];
+  }
+
+  cachedRequiredCommUserTypesAt = now;
+  return cachedRequiredCommUserTypes;
+};
+
+/** Allowed types from org setting (default PRIME). */
+const resolveRequiredCommTypes = (requiredTypes = null) =>
+  (
+    Array.isArray(requiredTypes) && requiredTypes.length
+      ? requiredTypes
+      : cachedRequiredCommUserTypes?.length
+        ? cachedRequiredCommUserTypes
+        : ["PRIME"]
+  )
+    .map((s) => normalizeCommUserType(s))
+    .filter(Boolean);
+
+/** True when SoftOnCloud userType matches required type from organisation DB setting. */
+export const isCommFromEligibleUserType = (userType, requiredTypes = null) => {
+  const type = normalizeCommUserType(userType);
+  if (!type) return false;
+  return resolveRequiredCommTypes(requiredTypes).includes(type);
+};
+
+/** Pick userType from SoftOnCloud GET .../products/{id}/users row. */
+export const pickProductUserType = (user) =>
+  normalizeCommUserType(
+    user?.userType ??
+      user?.UserType ??
+      user?.identityType ??
+      user?.IdentityType ??
+      ""
+  );
+
+/**
+ * Map SoftOnCloud roleNames / roleCodes → PRIME|ADMIN style tokens.
+ * e.g. roleNames: ["Admin"] → ADMIN; roleCodes: ["CHATS_ADMIN"] → ADMIN
+ */
+export const normalizeCommRoleToken = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const upper = raw.toUpperCase().replace(/[\s-]+/g, "_");
+  if (upper === "ADMIN" || upper === "PRIME" || upper === "SUB") return upper;
+  if (
+    upper.includes("ADMIN") ||
+    upper === "CHATS_ADMIN" ||
+    upper.endsWith("_ADMIN")
+  ) {
+    return "ADMIN";
+  }
+  if (upper.includes("PRIME")) return "PRIME";
+  return normalizeCommUserType(raw);
+};
+
+/** Collect eligibility tokens from product-users row (userType + roleNames + roleCodes). */
+export const pickProductCommEligibilityTokens = (user) => {
+  if (!user) return [];
+  const tokens = new Set();
+  const userType = pickProductUserType(user);
+  if (userType) tokens.add(userType);
+
+  const roleNames = user?.roleNames ?? user?.RoleNames ?? [];
+  const roleCodes = user?.roleCodes ?? user?.RoleCodes ?? [];
+  const roleList = [
+    ...(Array.isArray(roleNames) ? roleNames : [roleNames]),
+    ...(Array.isArray(roleCodes) ? roleCodes : [roleCodes]),
+  ];
+  roleList.forEach((r) => {
+    const t = normalizeCommRoleToken(r);
+    if (t) tokens.add(t);
+  });
+  return [...tokens];
+};
+
+/** True when any token (userType or role) matches required AllUserCommunicationUserType. */
+export const isCommFromEligibleTokens = (tokens, requiredTypes = null) => {
+  const allow = resolveRequiredCommTypes(requiredTypes);
+  if (!allow.length) return false;
+  return (tokens || [])
+    .map((t) => normalizeCommUserType(t) || normalizeCommRoleToken(t))
+    .filter(Boolean)
+    .some((t) => allow.includes(t));
+};
+
+export const unwrapOrganisationProductUsers = (response) => {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.users)) return response.users;
+  if (Array.isArray(response?.data?.users)) return response.data.users;
+  if (Array.isArray(response?.items)) return response.items;
+  return [];
+};
+
+export const persistSessionUserType = (userType) => {
+  const normalized = normalizeCommUserType(userType);
+  if (!normalized) return;
+  const session = getAuthSession();
+  if (!session) return;
+  sessionStorage.setItem(
+    "authUser",
+    JSON.stringify({
+      ...session,
+      userType: normalized,
+      identityType: normalized,
+      user: {
+        ...(session.user || {}),
+        userType: normalized,
+        identityType: normalized,
+      },
+    })
+  );
+};
+
+/** Persist SoftOnCloud roleNames / roleCodes for All User Communication eligibility. */
+export const persistSessionCommRoles = (roleNames = [], roleCodes = []) => {
+  const names = (Array.isArray(roleNames) ? roleNames : [roleNames])
+    .map((r) => String(r || "").trim())
+    .filter(Boolean);
+  const codes = (Array.isArray(roleCodes) ? roleCodes : [roleCodes])
+    .map((r) => String(r || "").trim())
+    .filter(Boolean);
+  const session = getAuthSession();
+  if (!session) return;
+  sessionStorage.setItem(
+    "authUser",
+    JSON.stringify({
+      ...session,
+      roleNames: names.length ? names : session.roleNames,
+      roleCodes: codes.length ? codes : session.roleCodes,
+      productContext: {
+        ...(session.productContext || {}),
+        roleNames: names.length
+          ? names
+          : session.productContext?.roleNames,
+        roleCodes: codes.length
+          ? codes
+          : session.productContext?.roleCodes,
+      },
+      user: {
+        ...(session.user || {}),
+        roleNames: names.length ? names : session.user?.roleNames,
+        roleCodes: codes.length ? codes : session.user?.roleCodes,
+      },
+    })
+  );
+};
+
+const findSelfProductUserRow = (rows, me) =>
+  (rows || []).find((u) => {
+    const id = Number(u?.userId ?? u?.UserId ?? 0);
+    if (me?.userId != null && id > 0 && String(id) === String(me.userId)) {
+      return true;
+    }
+    const email = String(u?.email || u?.Email || "")
+      .trim()
+      .toLowerCase();
+    return Boolean(
+      me?.email && email === String(me.email).trim().toLowerCase()
+    );
+  });
+
+/** Resolve logged-in SoftOnCloud eligibility tokens (userType + Admin roleNames). */
+export const resolveLoggedInCommEligibilityTokens = async () => {
+  const me = getSessionUserIdentity();
+  const fallbackType = normalizeCommUserType(me?.userType || me?.identityType);
+  const fallbackRoles = [
+    ...(me?.roleNames || []),
+    ...(me?.roleCodes || []),
+  ].map(normalizeCommRoleToken).filter(Boolean);
+  const fallback = [
+    ...(fallbackType ? [fallbackType] : []),
+    ...fallbackRoles,
+  ];
+
+  const orgId = getSessionPublicOrgId();
+  const productId = getConfiguredProductId();
+  if (!orgId || !productId) return [...new Set(fallback)];
+
+  try {
+    const response = await getOrganisationProductUsers(orgId, productId);
+    const rows = unwrapOrganisationProductUsers(response);
+    const self = findSelfProductUserRow(rows, me);
+    if (!self) return [...new Set(fallback)];
+
+    const tokens = pickProductCommEligibilityTokens(self);
+    const type = pickProductUserType(self);
+    if (type) persistSessionUserType(type);
+    persistSessionCommRoles(
+      self?.roleNames ?? self?.RoleNames ?? [],
+      self?.roleCodes ?? self?.RoleCodes ?? []
+    );
+    return tokens.length ? tokens : [...new Set(fallback)];
+  } catch {
+    return [...new Set(fallback)];
+  }
+};
+
+/** Resolve logged-in user's SoftOnCloud userType from product-users API (authoritative). */
+export const resolveLoggedInProductUserType = async () => {
+  const tokens = await resolveLoggedInCommEligibilityTokens();
+  const preferred =
+    tokens.find((t) => t === "PRIME" || t === "ADMIN") || tokens[0] || "";
+  return preferred || normalizeCommUserType(
+    getSessionUserIdentity()?.userType || getSessionUserIdentity()?.identityType
+  );
+};
+
+export const canUseAllUserCommunication = (
+  identity = null,
+  requiredTypes = null
+) => {
+  const me = identity || getSessionUserIdentity();
+  const tokens = [
+    me?.userType || me?.identityType,
+    ...(me?.roleNames || []),
+    ...(me?.roleCodes || []),
+    me?.role,
+  ]
+    .flatMap((v) => (Array.isArray(v) ? v : [v]))
+    .map((v) => normalizeCommUserType(v) || normalizeCommRoleToken(v))
+    .filter(Boolean);
+  return isCommFromEligibleTokens(tokens, requiredTypes);
+};
+
+export const shouldShowAllUserCommunicationMenu = (
+  identity = null,
+  requiredTypes = null
+) => canUseAllUserCommunication(identity, requiredTypes);
+
+/** Clear cached All User Communication required-types (call after login). */
+export const clearAllUserCommunicationEligibilityCache = () => {
+  cachedRequiredCommUserTypes = null;
+  cachedRequiredCommUserTypesAt = 0;
+};
+
+/** Resolve SoftOnCloud userType/roles + org required type → may open All User Communication. */
+export const resolveCanUseAllUserCommunication = async ({
+  forceRefresh = false,
+} = {}) => {
+  if (forceRefresh) clearAllUserCommunicationEligibilityCache();
+  const [requiredTypes, tokens] = await Promise.all([
+    getAllUserCommunicationRequiredUserTypes({ forceRefresh }),
+    resolveLoggedInCommEligibilityTokens(),
+  ]);
+  const myType =
+    tokens.find((t) => t === "PRIME" || t === "ADMIN") || tokens[0] || null;
+  return {
+    allowed: isCommFromEligibleTokens(tokens, requiredTypes),
+    userType: myType,
+    eligibilityTokens: tokens,
+    requiredUserTypes: requiredTypes,
+  };
+};
+
 export const getSessionUserIdentity = () => {
   const session = getAuthSession();
   const token =
@@ -1332,6 +1672,50 @@ export const getSessionUserIdentity = () => {
     tokenUser.avatarUrl ||
     null;
 
+  const userType = normalizeCommUserType(
+    session?.user?.userType ||
+      session?.user?.identityType ||
+      session?.userType ||
+      session?.identityType ||
+      session?.productContext?.userType ||
+      session?.productContext?.identityType ||
+      tokenUser.userType ||
+      tokenUser.identityType ||
+      tokenUser.UserType ||
+      tokenUser.IdentityType
+  );
+
+  const roleNamesRaw =
+    session?.roleNames ||
+    session?.user?.roleNames ||
+    session?.productContext?.roleNames ||
+    tokenUser.roleNames ||
+    null;
+  const roleCodesRaw =
+    session?.roleCodes ||
+    session?.user?.roleCodes ||
+    session?.productContext?.roleCodes ||
+    tokenUser.roleCodes ||
+    null;
+  const roleNames = (
+    Array.isArray(roleNamesRaw)
+      ? roleNamesRaw
+      : roleNamesRaw
+        ? String(roleNamesRaw).split(/[,;|]/)
+        : []
+  )
+    .map((r) => String(r || "").trim())
+    .filter(Boolean);
+  const roleCodes = (
+    Array.isArray(roleCodesRaw)
+      ? roleCodesRaw
+      : roleCodesRaw
+        ? String(roleCodesRaw).split(/[,;|]/)
+        : []
+  )
+    .map((r) => String(r || "").trim())
+    .filter(Boolean);
+
   return {
     userId,
     email,
@@ -1343,10 +1727,11 @@ export const getSessionUserIdentity = () => {
       session?.user?.phoneCountryCode ||
       null,
     role:
-      session?.roleNames?.[0] ||
-      session?.productContext?.roleNames?.[0] ||
+      roleNames[0] ||
       session?.jobTitle ||
       "Me",
+    roleNames,
+    roleCodes,
     jobTitle: session?.jobTitle || session?.user?.jobTitle || null,
     department: session?.department || session?.user?.department || null,
     location:
@@ -1357,7 +1742,8 @@ export const getSessionUserIdentity = () => {
       session?.address ||
       session?.user?.address ||
       null,
-    // Prefer SoftOnCloud session / JWT image only (GET /api/profile updates this).
+    userType: userType || null,
+    identityType: userType || null,
     profileImage: profileImage || null,
   };
 };
@@ -1497,7 +1883,8 @@ export const resolveChatAttachmentUrl = (relativePath) => {
 
 const redirectToLogin = (reason) => {
   if (typeof window === "undefined") return;
-  if (String(window.location.pathname || "").includes("/login")) return;
+  const path = String(window.location.pathname || "");
+  if (path.includes("/login") || path.includes("/logout")) return;
   try {
     sessionStorage.removeItem("authUser");
     localStorage.removeItem("authToken");
@@ -1600,6 +1987,33 @@ export const getOrCreatePrivateChat = async (user1Id, user2Id) => {
   }
 };
 
+/** GET /api/chat/private/{user1Id}/{user2Id}/messages — All User Communication */
+export const getPrivateChatMessagesBetweenUsers = async (user1Id, user2Id) => {
+  const u1 = Number(user1Id);
+  const u2 = Number(user2Id);
+  if (!Number.isFinite(u1) || u1 <= 0 || !Number.isFinite(u2) || u2 <= 0) {
+    throw new Error("Both user ids are required.");
+  }
+  if (u1 === u2) throw new Error("From and To must be different users.");
+
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const params = tenantQuery(ctx);
+  const query = Object.keys(params)
+    .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+    .join("&");
+
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_PRIVATE}/${u1}/${u2}/messages?${query}`,
+      { headers: chatAuthHeaders(ctx) }
+    );
+    return unwrapChatList(response);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
 /** GET /api/chat/{chatId}/messages?orgId&appId&fiscalYearId */
 export const getChatMessages = async (chatId) => {
   const parsedChatId = Number(chatId);
@@ -1617,6 +2031,65 @@ export const getChatMessages = async (chatId) => {
   try {
     const response = await axios.get(
       `${base}${url.CHAT_BY_ID}/${parsedChatId}/messages?${query}`,
+      { headers: chatAuthHeaders(ctx) }
+    );
+    return unwrapChatList(response);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/chat/all-user-communication/groups — all org groups (PRIME/ADMIN observer). */
+export const getOrganisationChatGroupsForObserver = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_AUC_GROUPS}`,
+      chatTenantRequestConfig(ctx)
+    );
+    return unwrapGroupList(response);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/chat/all-user-communication/groups/{groupId}/members — observer member list. */
+export const getOrganisationGroupMembersForObserver = async (groupId) => {
+  const parsed = Number(groupId);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("groupId is required.");
+  }
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_AUC_GROUPS}/${parsed}/members`,
+      chatTenantRequestConfig(ctx)
+    );
+    return unwrapGroupList(response);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/chat/all-user-communication/chats/{chatId}/messages — group thread (observer). */
+export const getGroupChatMessagesForObserver = async (chatId) => {
+  const parsedChatId = Number(chatId);
+  if (!Number.isFinite(parsedChatId) || parsedChatId <= 0) {
+    throw new Error("chatId is required to load group messages.");
+  }
+
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const params = tenantQuery(ctx);
+  const query = Object.keys(params)
+    .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+    .join("&");
+
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_AUC_GROUP_MESSAGES}/${parsedChatId}/messages?${query}`,
       { headers: chatAuthHeaders(ctx) }
     );
     return unwrapChatList(response);
@@ -3540,5 +4013,139 @@ export const formatDateByPreference = (value, format = getChatDateFormat()) => {
       // Keep WhatsApp-like short day without leading zero when matching DD MMM YYYY
       if (pattern === "DD MMM YYYY") return `${d} ${mon} ${yyyy}`;
       return `${d} ${mon} ${yyyy}`;
+  }
+};
+
+// ─── Permissions (Chat_Api → tab_menu_master + tab_role_permission) ──────────
+
+const unwrapPermissionList = (response) => {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.items)) return response.items;
+  return [];
+};
+
+const mapPermissionRow = (row) => ({
+  permissionId: Number(row.permissionId ?? row.PermissionId ?? 0),
+  tabId: Number(row.tabId ?? row.TabId ?? 0),
+  tabCode: String(row.tabCode ?? row.TabCode ?? ""),
+  tab: String(row.tabName ?? row.TabName ?? ""),
+  tabName: String(row.tabName ?? row.TabName ?? ""),
+  routePath: row.routePath ?? row.RoutePath ?? null,
+  iconClass: row.iconClass ?? row.IconClass ?? "ri-menu-line",
+  sectionCode: String(row.sectionCode ?? row.SectionCode ?? "").toUpperCase() || null,
+  parentTabId: row.parentTabId ?? row.ParentTabId ?? null,
+  sortOrder: Number(row.sortOrder ?? row.SortOrder ?? 0),
+  view: Boolean(row.canView ?? row.CanView),
+  add: Boolean(row.canAdd ?? row.CanAdd),
+  edit: Boolean(row.canEdit ?? row.CanEdit),
+  delete: Boolean(row.canDelete ?? row.CanDelete),
+  active: Boolean(row.isActive ?? row.IsActive),
+  canView: Boolean(row.canView ?? row.CanView),
+  canAdd: Boolean(row.canAdd ?? row.CanAdd),
+  canEdit: Boolean(row.canEdit ?? row.CanEdit),
+  canDelete: Boolean(row.canDelete ?? row.CanDelete),
+  isActive: Boolean(row.isActive ?? row.IsActive),
+  roleId: Number(row.roleId ?? row.RoleId ?? 0),
+  roleCode: String(row.roleCode ?? row.RoleCode ?? ""),
+});
+
+/** GET /api/permissions/roles */
+export const getChatPermissionRoles = async () => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  try {
+    const response = await axios.get(
+      `${base}${url.CHAT_PERMISSIONS_ROLES}`,
+      chatTenantRequestConfig(ctx)
+    );
+    return unwrapPermissionList(response).map((r) => ({
+      roleId: Number(r.roleId ?? r.RoleId ?? 0),
+      roleCode: String(r.roleCode ?? r.RoleCode ?? ""),
+      roleName: String(r.roleName ?? r.RoleName ?? r.roleCode ?? r.RoleCode ?? ""),
+    }));
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/permissions/matrix?roleId= */
+export const getChatPermissionMatrix = async (roleId, roleCode) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const params = {
+    ...tenantQuery(ctx),
+    ...(roleId != null && roleId !== "" ? { roleId: Number(roleId) } : {}),
+    ...(roleCode ? { roleCode: String(roleCode) } : {}),
+  };
+  try {
+    const response = await axios.get(`${base}${url.CHAT_PERMISSIONS_MATRIX}`, {
+      headers: chatAuthHeaders(ctx),
+      params,
+    });
+    return unwrapPermissionList(response).map(mapPermissionRow);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** PUT /api/permissions/matrix */
+export const saveChatPermissionMatrix = async ({ roleId, roleCode, rows }) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const body = {
+    roleId: Number(roleId),
+    roleCode: roleCode || null,
+    rows: (rows || []).map((row) => ({
+      permissionId: row.permissionId || null,
+      tabId: Number(row.tabId),
+      canView: Boolean(row.view ?? row.canView),
+      canAdd: Boolean(row.add ?? row.canAdd),
+      canEdit: Boolean(row.edit ?? row.canEdit),
+      canDelete: Boolean(row.delete ?? row.canDelete),
+      isActive: Boolean(row.active ?? row.isActive),
+    })),
+  };
+  try {
+    const response = await axios.put(
+      `${base}${url.CHAT_PERMISSIONS_MATRIX}`,
+      body,
+      chatTenantRequestConfig(ctx)
+    );
+    return unwrapPermissionList(response).map(mapPermissionRow);
+  } catch (error) {
+    rethrowChatError(error);
+  }
+};
+
+/** GET /api/permissions/menu — dynamic sidebar from DB */
+export const getChatPermissionMenu = async (roleId, roleCode) => {
+  const ctx = requireChatContext();
+  const base = getChatApiBaseUrl();
+  const me = getSessionUserIdentity();
+  // Use the user's actual SoftOnCloud role — do NOT prefer *_ADMIN
+  // (that made Employee sessions load the Admin Master menu).
+  const codes = Array.isArray(me?.roleCodes)
+    ? me.roleCodes.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
+  const sessionCode =
+    roleCode ||
+    codes.find((c) => /_EMPLOYEE$/i.test(c)) ||
+    codes.find((c) => !/_ADMIN$/i.test(c)) ||
+    codes[0] ||
+    null;
+  const params = {
+    ...tenantQuery(ctx),
+    ...(roleId != null && roleId !== "" ? { roleId: Number(roleId) } : {}),
+    ...(sessionCode ? { roleCode: String(sessionCode) } : {}),
+  };
+  try {
+    const response = await axios.get(`${base}${url.CHAT_PERMISSIONS_MENU}`, {
+      headers: chatAuthHeaders(ctx),
+      params,
+    });
+    return unwrapPermissionList(response).map(mapPermissionRow);
+  } catch (error) {
+    rethrowChatError(error);
   }
 };

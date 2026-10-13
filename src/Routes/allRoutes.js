@@ -255,7 +255,11 @@ import CommMessages from "../pages/Communication/Messages";
 import CommGroups from "../pages/Communication/Groups";
 import CommAnnouncements from "../pages/Communication/Announcements";
 import CommSettings from "../pages/Communication/Settings";
+import CommAllUserCommunication from "../pages/Communication/AllUserCommunication";
 import CommManagementDashboard from "../pages/Communication/ManagementDashboard";
+import MasterManageUsers from "../pages/Communication/Master/ManageUsers";
+import MasterManageRoles from "../pages/Communication/Master/ManageRoles";
+import MasterManagePermissions from "../pages/Communication/Master/ManagePermissions";
 
 const authProtectedRoutes = [
   { path: "/dashboard-analytics", component: <DashboardAnalytics /> },
@@ -484,7 +488,17 @@ const communicationRoutes = [
   { path: "/communication/groups", component: <CommGroups /> },
   { path: "/communication/announcements", component: <CommAnnouncements /> },
   { path: "/communication/settings", component: <CommSettings /> },
+  {
+    path: "/communication/all-user-communication",
+    component: <CommAllUserCommunication />,
+  },
   { path: "/communication/management", component: <CommManagementDashboard /> },
+  { path: "/communication/master/manage-users", component: <MasterManageUsers /> },
+  { path: "/communication/master/manage-roles", component: <MasterManageRoles /> },
+  {
+    path: "/communication/master/manage-permissions",
+    component: <MasterManagePermissions />,
+  },
 ];
 
 const publicRoutes = [

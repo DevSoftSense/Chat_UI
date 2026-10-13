@@ -39,6 +39,8 @@ const ActionsMenu = ({
   announcement,
   pinned,
   canManage,
+  canEdit = false,
+  canDelete = false,
   menuOpen,
   setMenuOpen,
   onViewDetails,
@@ -101,35 +103,37 @@ const ActionsMenu = ({
           >
             View Details
           </button>
+          {canEdit ? (
+            <button
+              type="button"
+              className="dropdown-item"
+              role="menuitem"
+              onClick={(e) => runAction(e, () => onEdit?.(announcement))}
+            >
+              Edit
+            </button>
+          ) : null}
           {canManage ? (
-            <>
-              <button
-                type="button"
-                className="dropdown-item"
-                role="menuitem"
-                onClick={(e) => runAction(e, () => onEdit?.(announcement))}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                className="dropdown-item"
-                role="menuitem"
-                onClick={(e) =>
-                  runAction(e, () => onPinToggle?.(announcement, !pinned))
-                }
-              >
-                {pinned ? "Unpin" : "Pin"}
-              </button>
-              <button
-                type="button"
-                className="dropdown-item text-danger"
-                role="menuitem"
-                onClick={(e) => runAction(e, () => onDelete?.(announcement))}
-              >
-                Delete
-              </button>
-            </>
+            <button
+              type="button"
+              className="dropdown-item"
+              role="menuitem"
+              onClick={(e) =>
+                runAction(e, () => onPinToggle?.(announcement, !pinned))
+              }
+            >
+              {pinned ? "Unpin" : "Pin"}
+            </button>
+          ) : null}
+          {canDelete ? (
+            <button
+              type="button"
+              className="dropdown-item text-danger"
+              role="menuitem"
+              onClick={(e) => runAction(e, () => onDelete?.(announcement))}
+            >
+              Delete
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -144,6 +148,8 @@ const AnnouncementCard = ({
   onDelete,
   onPinToggle,
   canManage = false,
+  canEdit = false,
+  canDelete = false,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -201,6 +207,8 @@ const AnnouncementCard = ({
       announcement={announcement}
       pinned={pinned}
       canManage={canManage}
+      canEdit={canEdit}
+      canDelete={canDelete}
       menuOpen={menuOpen}
       setMenuOpen={setMenuOpen}
       onViewDetails={onViewDetails}

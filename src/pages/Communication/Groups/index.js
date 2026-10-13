@@ -86,6 +86,10 @@ import {
   getChatDateFormat,
   formatDateByPreference,
 } from "../../../helpers/softoncloud_auth_helper";
+import {
+  CHAT_TAB,
+  useTabPermission,
+} from "../../../contexts/ChatPermissionsContext";
 import "../Messages/messages.scss";
 
 const URL_IN_TEXT_RE = /https?:\/\/[^\s<>"']+/gi;
@@ -534,6 +538,7 @@ const resolveGroupAvatarSrc = (raw) => {
 
 const Groups = () => {
   document.title = "Groups | Chat | SoftOnCloud";
+  const { canAdd, canEdit, canDelete } = useTabPermission(CHAT_TAB.GROUPS);
 
   const me = useMemo(() => getSessionUserIdentity(), []);
   const userChatShow = useRef(null);
@@ -2417,6 +2422,10 @@ const Groups = () => {
 
   const sendMessage = async (e) => {
     e?.preventDefault?.();
+    if (!canAdd) {
+      showToast("You do not have permission to send group messages.");
+      return;
+    }
     const text = curMessage.trim();
     if (!text || sending) return;
     const ok = await sendOutbound({
@@ -3133,20 +3142,22 @@ const Groups = () => {
                   <div className="flex-grow-1">
                     <h5 className="mb-4">Groups</h5>
                   </div>
-                  <div className="flex-shrink-0">
-                    <UncontrolledTooltip placement="bottom" target="createGroupBtn">
-                      Create group
-                    </UncontrolledTooltip>
-                    <Button
-                      color=""
-                      id="createGroupBtn"
-                      className="btn btn-soft-success btn-sm shadow-none"
-                      type="button"
-                      onClick={openCreateModal}
-                    >
-                      <i className="ri-add-line align-bottom"></i>
-                    </Button>
-                  </div>
+                  {canAdd ? (
+                    <div className="flex-shrink-0">
+                      <UncontrolledTooltip placement="bottom" target="createGroupBtn">
+                        Create group
+                      </UncontrolledTooltip>
+                      <Button
+                        color=""
+                        id="createGroupBtn"
+                        className="btn btn-soft-success btn-sm shadow-none"
+                        type="button"
+                        onClick={openCreateModal}
+                      >
+                        <i className="ri-add-line align-bottom"></i>
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="search-box">
                   <input
@@ -3429,28 +3440,32 @@ const Groups = () => {
                                         <i className="ri-group-line align-bottom text-muted me-2"></i>
                                         Group info
                                       </DropdownItem>
-                                      {isCurrentAdmin ? (
+                                      {isCurrentAdmin && (canEdit || canAdd) ? (
                                         <>
-                                          <DropdownItem
-                                            href="#"
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              openEditModal();
-                                            }}
-                                          >
-                                            <i className="ri-pencil-line align-bottom text-muted me-2"></i>
-                                            Edit Group
-                                          </DropdownItem>
-                                          <DropdownItem
-                                            href="#"
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              openAddMembers();
-                                            }}
-                                          >
-                                            <i className="ri-user-add-line align-bottom text-muted me-2"></i>
-                                            Add members
-                                          </DropdownItem>
+                                          {canEdit ? (
+                                            <DropdownItem
+                                              href="#"
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                openEditModal();
+                                              }}
+                                            >
+                                              <i className="ri-pencil-line align-bottom text-muted me-2"></i>
+                                              Edit Group
+                                            </DropdownItem>
+                                          ) : null}
+                                          {canAdd ? (
+                                            <DropdownItem
+                                              href="#"
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                openAddMembers();
+                                              }}
+                                            >
+                                              <i className="ri-user-add-line align-bottom text-muted me-2"></i>
+                                              Add members
+                                            </DropdownItem>
+                                          ) : null}
                                         </>
                                       ) : null}
                                       <DropdownItem
@@ -3495,27 +3510,29 @@ const Groups = () => {
                               >
                                 Forward
                               </Button>
-                              <Button
-                                size="sm"
-                                color="soft-danger"
-                                disabled={!selectedMessageIds.length}
-                                onClick={() => {
-                                  const selected = visibleMessages.filter(
-                                    (msg) =>
-                                      !msg.isDateSeparator &&
-                                      selectedMessageIds
-                                        .map(String)
-                                        .includes(String(msg.id))
-                                  );
-                                  if (!selected.length) {
-                                    showToast("No messages selected");
-                                    return;
-                                  }
-                                  setDeleteDialog({ messages: selected });
-                                }}
-                              >
-                                Delete
-                              </Button>
+                              {canDelete ? (
+                                <Button
+                                  size="sm"
+                                  color="soft-danger"
+                                  disabled={!selectedMessageIds.length}
+                                  onClick={() => {
+                                    const selected = visibleMessages.filter(
+                                      (msg) =>
+                                        !msg.isDateSeparator &&
+                                        selectedMessageIds
+                                          .map(String)
+                                          .includes(String(msg.id))
+                                    );
+                                    if (!selected.length) {
+                                      showToast("No messages selected");
+                                      return;
+                                    }
+                                    setDeleteDialog({ messages: selected });
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              ) : null}
                               <Button
                                 size="sm"
                                 color="light"
@@ -3915,7 +3932,7 @@ const Groups = () => {
                                                   {messageActionItems
                                                     .filter((item) => {
                                                       if (item.id === "delete")
-                                                        return true;
+                                                        return canDelete;
                                                       if (item.id === "info") {
                                                         return msg.from === "me";
                                                       }
@@ -4664,7 +4681,7 @@ const Groups = () => {
                     <h4 className="comm-gi-name mb-0 text-truncate">
                       {activeGroup?.name}
                     </h4>
-                    {isCurrentAdmin ? (
+                    {isCurrentAdmin && canEdit ? (
                       <button
                         type="button"
                         className="btn btn-ghost-secondary btn-icon btn-sm"
@@ -4687,7 +4704,7 @@ const Groups = () => {
                   </button>
 
                   <div className="comm-gi-quick-actions mt-3">
-                    {isCurrentAdmin ? (
+                    {isCurrentAdmin && canAdd ? (
                       <button
                         type="button"
                         className="comm-gi-quick-btn"
@@ -4725,7 +4742,7 @@ const Groups = () => {
                       {activeGroup?.description || "No description"}
                     </p>
                   )}
-                  {isCurrentAdmin ? (
+                  {isCurrentAdmin && canEdit ? (
                     <button
                       type="button"
                       className="btn btn-link btn-sm text-success text-decoration-none px-0 mt-2"

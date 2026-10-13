@@ -65,7 +65,7 @@ const Login = (props) => {
         .trim()
         .email("Please Enter a Valid Email")
         .required("Please Enter Your Email"),
-      password: Yup.string().required("Please Enter Your Temporary Password"),
+      password: Yup.string().required("Please Enter Your Password"),
     }),
     onSubmit: (values) => {
       const orgId = String(values.organizationId || "").trim();
@@ -209,7 +209,7 @@ const Login = (props) => {
                             className="form-label"
                             htmlFor="password-input"
                           >
-                            Temporary Password
+                            Password
                           </Label>
                           <div className="position-relative auth-pass-inputgroup mb-3">
                             <Input
@@ -218,7 +218,7 @@ const Login = (props) => {
                               value={validation.values.password}
                               type={passwordShow ? "text" : "password"}
                               className="form-control pe-5"
-                              placeholder="Enter temporary password"
+                              placeholder="Enter password"
                               autoComplete="current-password"
                               onChange={validation.handleChange}
                               onBlur={validation.handleBlur}

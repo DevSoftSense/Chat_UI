@@ -14,6 +14,8 @@ export const GET_AUTH_RESOLVE_CONTEXT = "/api/auth/resolve-context";
 export const GET_AUTH_PRODUCT_CONNECTION = "/api/auth/product-connection";
 export const GET_AUTH_COUNTRIES = "/api/auth/countries";
 export const GET_ORGANISATION_PRODUCT_USERS = "/api/organisations";
+export const POST_AUTH_SUB_USERS = "/api/auth/sub-users";
+export const POST_ORGANISATION_ROLES = "/api/organisations/roles";
 export const POST_AUTH_FORGOT_PASSWORD = "/api/auth/forgot-password";
 export const POST_AUTH_VERIFY_PASSWORD_RESET_OTP = "/api/auth/verify-password-reset-otp";
 export const POST_AUTH_RESEND_PASSWORD_RESET_OTP = "/api/auth/resend-password-reset-otp";
@@ -47,6 +49,8 @@ export const DELETE_MESSAGE = "delete/message";
 
 // SoftOnCloud Chat_Api (real product API)
 export const CHAT_PRIVATE = "/api/chat/private";
+export const CHAT_AUC_GROUPS = "/api/chat/all-user-communication/groups";
+export const CHAT_AUC_GROUP_MESSAGES = "/api/chat/all-user-communication/chats";
 export const CHAT_BY_ID = "/api/chat";
 export const CHAT_NOTIFICATIONS = "/api/chat/notifications";
 export const CHAT_UNREAD_COUNTS = "/api/chat/unread-counts";
@@ -72,6 +76,9 @@ export const CHAT_SETTINGS_PRIVACY = "/api/settings/privacy";
 export const CHAT_SETTINGS_STORAGE = "/api/settings/storage";
 export const CHAT_SETTINGS_INTEGRATIONS = "/api/settings/integrations";
 export const CHAT_DASHBOARD = "/api/chat/dashboard";
+export const CHAT_PERMISSIONS_ROLES = "/api/permissions/roles";
+export const CHAT_PERMISSIONS_MATRIX = "/api/permissions/matrix";
+export const CHAT_PERMISSIONS_MENU = "/api/permissions/menu";
 
 //Mailbox
 export const GET_MAIL_DETAILS = "/mail";

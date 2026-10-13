@@ -1,35 +1,32 @@
 import PropTypes from "prop-types";
 import React, { useEffect } from "react";
-import { Navigate } from "react-router-dom";
 
 import { logoutUser } from "../../slices/thunks";
 
-//redux
-import { useSelector, useDispatch } from "react-redux";
+import { useDispatch } from "react-redux";
 
 import withRouter from "../../Components/Common/withRouter";
-import { createSelector } from "reselect";
 
-const Logout = (props) => {
+const Logout = () => {
   const dispatch = useDispatch();
 
-
-  const logoutData = createSelector(
-    (state) => state.Login,
-    (isUserLogout) => isUserLogout.isUserLogout
-  );
-  // Inside your component
-  const isUserLogout = useSelector(logoutData);
-
   useEffect(() => {
-    dispatch(logoutUser());
+    let cancelled = false;
+    dispatch(logoutUser())
+      .catch(() => {
+        /* session clear is best-effort */
+      })
+      .finally(() => {
+        if (cancelled) return;
+        // Full navigation clears Redux, hooks, and SignalR without a hard refresh.
+        window.location.replace("/login");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [dispatch]);
 
-  if (isUserLogout) {
-    return <Navigate to="/login" />;
-  }
-
-  return <></>;
+  return null;
 };
 
 Logout.propTypes = {

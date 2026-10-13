@@ -17,6 +17,8 @@ const AnnouncementList = ({
   pageSize,
   totalCount,
   onPageChange,
+  canEdit = true,
+  canDelete = true,
 }) => {
   const me = getSessionUserIdentity();
 
@@ -51,7 +53,7 @@ const AnnouncementList = ({
   const from = (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, totalCount || items.length);
 
-  const canManage = (item) =>
+  const isOwner = (item) =>
     me?.userId &&
     String(item.postedBy ?? item.PostedBy) === String(me.userId);
 
@@ -63,7 +65,9 @@ const AnnouncementList = ({
       onEdit={onEdit}
       onDelete={onDelete}
       onPinToggle={onPinToggle}
-      canManage={canManage(item)}
+      canManage={isOwner(item)}
+      canEdit={canEdit && isOwner(item)}
+      canDelete={canDelete && isOwner(item)}
     />
   );
 

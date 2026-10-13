@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
+import { useSelector } from "react-redux";
 import { buildCommunicationMenu } from "./CommunicationMenuData";
 import {
   getMessagesUnreadTotal,
@@ -13,20 +15,115 @@ import {
   getSessionUserIdentity,
   subscribeChatPresence,
   ackChatMessageDelivered,
+  resolveCanUseAllUserCommunication,
+  getChatPermissionMenu,
+  shouldShowAllUserCommunicationMenu,
 } from "../helpers/softoncloud_auth_helper";
+import { isProductAdminSession } from "../helpers/softoncloud_master_helper";
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Sidebar menu items with dynamic Messages + Groups unread badges.
- * Prefer this hook over calling the old Navdata() function.
+ * Sidebar menu with unread badges + dynamic items from
+ * tab_menu_master / tab_role_permission (GET /api/permissions/menu).
  */
 export const useNavData = () => {
+  const location = useLocation();
+  const authUser = useSelector((state) => state.Login?.user);
+  const sessionUserId = getSessionUserIdentity()?.userId;
+
   const [messagesUnread, setMessagesUnread] = useState(getMessagesUnreadTotal);
   const [groupsUnread, setGroupsUnread] = useState(getGroupsUnreadTotal);
+  // Prefer session already warmed at login; avoid starting false then flipping after refresh only.
+  const [showAllUserCommunication, setShowAllUserCommunication] = useState(() =>
+    shouldShowAllUserCommunicationMenu()
+  );
+  const [permissionMenu, setPermissionMenu] = useState(null);
+  const [isMasterOpen, setIsMasterOpen] = useState(() =>
+    String(location.pathname || "").includes("/communication/master")
+  );
+
+  const onToggleMaster = useCallback(() => {
+    setIsMasterOpen((open) => !open);
+  }, []);
+
+  // Keep Master dropdown open while on a Master page
+  useEffect(() => {
+    if (String(location.pathname || "").includes("/communication/master")) {
+      setIsMasterOpen(true);
+    }
+  }, [location.pathname]);
 
   useEffect(() => subscribeMessagesUnreadTotal(setMessagesUnread), []);
   useEffect(() => subscribeGroupsUnreadTotal(setGroupsUnread), []);
 
-  // Load totals on layout mount (works even before opening Messages/Groups).
+  // Resolve All User Communication eligibility; retry until session/context is ready.
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveAuc = async () => {
+      // Immediate session check (roles persisted from login / prior resolve)
+      if (shouldShowAllUserCommunicationMenu()) {
+        if (!cancelled) setShowAllUserCommunication(true);
+      }
+
+      const attempts = [0, 250, 600, 1200];
+      for (const delay of attempts) {
+        if (cancelled) return;
+        if (delay) await sleep(delay);
+
+        const me = getSessionUserIdentity();
+        if (!me?.userId && !me?.token) continue;
+
+        try {
+          const result = await resolveCanUseAllUserCommunication();
+          if (!cancelled) {
+            setShowAllUserCommunication(Boolean(result.allowed));
+          }
+          if (result?.allowed) return;
+        } catch {
+          // retry
+        }
+      }
+    };
+
+    resolveAuc();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionUserId, authUser, location.pathname]);
+
+  // Load permission-driven menu once session user is available; retry briefly after login.
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMenu = async () => {
+      const attempts = [0, 300, 800];
+      for (const delay of attempts) {
+        if (cancelled) return;
+        if (delay) await sleep(delay);
+
+        const me = getSessionUserIdentity();
+        if (!me?.userId && !me?.token) continue;
+
+        try {
+          const menu = await getChatPermissionMenu();
+          if (!cancelled) {
+            setPermissionMenu(Array.isArray(menu) ? menu : []);
+            return;
+          }
+        } catch {
+          if (!cancelled) setPermissionMenu(null);
+        }
+      }
+    };
+
+    loadMenu();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionUserId, authUser]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -36,7 +133,7 @@ export const useNavData = () => {
           setMessagesUnreadTotal(result.totalUnread);
         }
       } catch {
-        // SQL / API may not be applied yet — keep current badge.
+        // ignore
       }
       try {
         const rows = await getChatGroups();
@@ -50,15 +147,14 @@ export const useNavData = () => {
           setGroupsUnreadTotal(sumGroupListUnread(mapped));
         }
       } catch {
-        // Groups API / unread subquery may fail — keep current badge.
+        // ignore
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sessionUserId]);
 
-  // Live hub: delivery ack (Message Info) + sidebar unread badges.
   useEffect(() => {
     const me = getSessionUserIdentity();
     const myId = me?.userId != null ? String(me.userId) : "";
@@ -75,7 +171,6 @@ export const useNavData = () => {
       const messageId = payload.messageId ?? payload.MessageId;
       const chatId = Number(payload.chatId ?? payload.ChatId ?? 0);
 
-      // Group: always ack delivery when this client receives the message (any page).
       if (groupId != null && groupId !== "") {
         if (
           senderId &&
@@ -100,9 +195,18 @@ export const useNavData = () => {
 
       setMessagesUnreadTotal(getMessagesUnreadTotal() + 1);
     });
-  }, []);
+  }, [sessionUserId]);
 
-  return buildCommunicationMenu({ messagesUnread, groupsUnread });
+  return buildCommunicationMenu({
+    messagesUnread,
+    groupsUnread,
+    showAllUserCommunication,
+    permissionMenu,
+    isMasterOpen,
+    onToggleMaster,
+    // SoftOnCloud PRIME / ADMIN / *_ADMIN — not hardcoded "Employee"
+    showMaster: isProductAdminSession(),
+  });
 };
 
 /** @deprecated Prefer useNavData() so the Messages badge stays reactive. */
@@ -110,6 +214,9 @@ const Navdata = () =>
   buildCommunicationMenu({
     messagesUnread: getMessagesUnreadTotal(),
     groupsUnread: getGroupsUnreadTotal(),
+    showAllUserCommunication: shouldShowAllUserCommunicationMenu(),
+    permissionMenu: null,
+    showMaster: isProductAdminSession(),
   });
 
 export default Navdata;

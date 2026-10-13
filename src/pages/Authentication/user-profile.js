@@ -26,6 +26,10 @@ import {
   updateSoftOnCloudProfile,
   updateSoftOnCloudProfileImage,
 } from "../../helpers/softoncloud_auth_helper";
+import {
+  CHAT_TAB,
+  useTabPermission,
+} from "../../contexts/ChatPermissionsContext";
 
 const pickRaw = (raw, ...keys) => {
   if (!raw || typeof raw !== "object") return "";
@@ -101,6 +105,8 @@ const emptyForm = () => ({
 });
 
 const UserProfile = () => {
+  const { canEdit, isActive } = useTabPermission(CHAT_TAB.PROFILE);
+  const canSaveProfile = isActive && canEdit;
   const fileInputRef = useRef(null);
   const [form, setForm] = useState(emptyForm);
   const [avatarUrl, setAvatarUrl] = useState(null);
@@ -222,6 +228,10 @@ const UserProfile = () => {
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
+    if (!canSaveProfile) {
+      setError("You do not have permission to edit profile.");
+      return;
+    }
     setError("");
     setSuccess("");
     const username = String(form.username || "").trim();
@@ -502,13 +512,19 @@ const UserProfile = () => {
                         </Col>
                       </Row>
                       <div className="text-end">
-                        <Button color="primary" type="submit" disabled={saving}>
+                        <Button
+                          color="primary"
+                          type="submit"
+                          disabled={saving || !canSaveProfile}
+                        >
                           {saving ? (
                             <>
                               <Spinner size="sm" className="me-1" /> Saving…
                             </>
-                          ) : (
+                          ) : canSaveProfile ? (
                             "Save Changes"
+                          ) : (
+                            "View only"
                           )}
                         </Button>
                       </div>

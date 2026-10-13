@@ -13,6 +13,7 @@ import {
   tryReactivateIncludedPlan,
   isSubscriptionExpiredError,
   allowExpiredSubscriptionLogin,
+  resolveCanUseAllUserCommunication,
 } from "../../../helpers/softoncloud_auth_helper";
 
 import {
@@ -272,6 +273,13 @@ export const loginUser = (user, history) => async (dispatch) => {
     session = storeAuthSession(loginResponse, productContext, productConnection, {
       organizationId: String(user.organizationId || "").trim(),
     });
+    // Warm SoftOnCloud eligibility (userType/roles) before first sidebar paint
+    // so "All User Communication" appears immediately without a manual refresh.
+    try {
+      await resolveCanUseAllUserCommunication({ forceRefresh: true });
+    } catch {
+      // non-blocking — LayoutMenuData will retry
+    }
     dispatch(loginSuccess(session));
     history("/communication/dashboard");
   } catch (error) {

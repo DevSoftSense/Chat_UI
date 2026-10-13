@@ -31,6 +31,10 @@ import {
   syncChatRuntimePrefsFromSettings,
   setChatRuntimePrefs,
 } from "../../../helpers/softoncloud_auth_helper";
+import {
+  CHAT_TAB,
+  useTabPermission,
+} from "../../../contexts/ChatPermissionsContext";
 
 const LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
@@ -289,6 +293,8 @@ const mergeSessionIntoProfile = (normalized) => {
 
 const Settings = () => {
   document.title = "Settings | Chat Module | SoftOnCloud";
+  const { canEdit, isActive } = useTabPermission(CHAT_TAB.SETTINGS);
+  const canSaveSettings = isActive && canEdit;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -564,8 +570,9 @@ const Settings = () => {
         color="primary"
         size="sm"
         className="mt-2"
-        disabled={saving || avatarSaving}
+        disabled={saving || avatarSaving || !canSaveSettings}
         onClick={() => {
+          if (!canSaveSettings) return;
           const fullName = String(profileForm.fullName || "").trim();
           const language = String(profileForm.language || "").trim();
           const dateFormat = String(profileForm.dateFormat || "").trim();
@@ -649,7 +656,7 @@ const Settings = () => {
           }, "Profile updated");
         }}
       >
-        Update Profile
+        {canSaveSettings ? "Update Profile" : "View only"}
       </Button>
     </>
   );
@@ -701,8 +708,9 @@ const Settings = () => {
       <Button
         color="primary"
         size="sm"
-        disabled={saving || !msgForm.defaultMessageTypeId}
-        onClick={() =>
+        disabled={saving || !msgForm.defaultMessageTypeId || !canSaveSettings}
+        onClick={() => {
+          if (!canSaveSettings) return;
           runSave(async () => {
             const result = await updateChatSettingsMessageDefaults(msgForm);
             const nextDefaults = {
@@ -714,13 +722,13 @@ const Settings = () => {
               ...prev,
               messageDefaults: nextDefaults,
             }));
-              syncChatRuntimePrefsFromSettings({
-                messageDefaults: nextDefaults,
-                notifications: notifForm,
-                status: settings.status,
-              });
-            }, "Message defaults saved")
-          }
+            syncChatRuntimePrefsFromSettings({
+              messageDefaults: nextDefaults,
+              notifications: notifForm,
+              status: settings.status,
+            });
+          }, "Message defaults saved");
+        }}
       >
         Save Defaults
       </Button>
@@ -788,8 +796,9 @@ const Settings = () => {
           outline
           size="sm"
           className="mt-2"
-          disabled={saving}
-          onClick={() =>
+          disabled={saving || !canSaveSettings}
+          onClick={() => {
+            if (!canSaveSettings) return;
             runSave(async () => {
               const modes = {
                 messageReceived: normalizeNotifModeLocal(notifForm.messageReceived, "all"),
@@ -848,8 +857,8 @@ const Settings = () => {
                   }, 2600);
                 }
               }
-            }, "Notifications saved")
-          }
+            }, "Notifications saved");
+          }}
         >
           Save Notifications
         </Button>

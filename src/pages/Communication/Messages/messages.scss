@@ -1509,3 +1509,51 @@ html[data-bs-theme="dark"] .chat-conversation-list > li.chat-day-separator .chat
   line-height: 1;
   flex-shrink: 0;
 }
+
+/* All User Communication — To / From react-select (dark mode) */
+[data-bs-theme="dark"] .auc-user-select__control,
+[data-layout-mode="dark"] .auc-user-select__control {
+  background-color: var(--vz-input-bg, #212529) !important;
+  border-color: var(--vz-input-border, #32383e) !important;
+  color: var(--vz-body-color, #e9ebec) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__single-value,
+[data-layout-mode="dark"] .auc-user-select__single-value,
+[data-bs-theme="dark"] .auc-user-select__input-container,
+[data-layout-mode="dark"] .auc-user-select__input-container,
+[data-bs-theme="dark"] .auc-user-select__option,
+[data-layout-mode="dark"] .auc-user-select__option {
+  color: var(--vz-body-color, #e9ebec) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__placeholder,
+[data-layout-mode="dark"] .auc-user-select__placeholder {
+  color: var(--vz-secondary-color, #878a99) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__menu,
+[data-layout-mode="dark"] .auc-user-select__menu {
+  background-color: var(--vz-secondary-bg, #212529) !important;
+  border: 1px solid var(--vz-border-color, #32383e);
+}
+
+[data-bs-theme="dark"] .auc-user-select__option--is-focused,
+[data-layout-mode="dark"] .auc-user-select__option--is-focused {
+  background-color: var(--vz-tertiary-bg, #2a2f34) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__option--is-selected,
+[data-layout-mode="dark"] .auc-user-select__option--is-selected {
+  background-color: rgba(var(--vz-primary-rgb, 64, 81, 137), 0.35) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__indicator,
+[data-layout-mode="dark"] .auc-user-select__indicator {
+  color: var(--vz-secondary-color, #878a99) !important;
+}
+
+[data-bs-theme="dark"] .auc-user-select__indicator-separator,
+[data-layout-mode="dark"] .auc-user-select__indicator-separator {
+  background-color: var(--vz-border-color, #32383e) !important;
+}

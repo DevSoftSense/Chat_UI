@@ -31,6 +31,8 @@ const AnnouncementDetailsModal = ({
   onEdit,
   onDelete,
   onChanged,
+  canEdit = true,
+  canDelete = true,
 }) => {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
@@ -224,12 +226,12 @@ const AnnouncementDetailsModal = ({
             {busy === "pin" ? "Saving..." : isPinned ? "Unpin" : "Pin"}
           </Button>
         ) : null}
-        {isPoster ? (
+        {isPoster && canEdit ? (
           <Button color="soft-secondary" onClick={() => onEdit?.(item)}>
             Edit
           </Button>
         ) : null}
-        {isPoster ? (
+        {isPoster && canDelete ? (
           <Button color="danger" outline onClick={() => onDelete?.(item)}>
             Delete
           </Button>

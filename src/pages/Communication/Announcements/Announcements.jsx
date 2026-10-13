@@ -26,12 +26,19 @@ import {
   getAnnouncementById,
 } from "./services/announcementService";
 import { apiErrorMessage } from "./utils/announcementUtils";
+import {
+  CHAT_TAB,
+  useTabPermission,
+} from "../../../contexts/ChatPermissionsContext";
 import "./styles/announcements.scss";
 
 const Announcements = () => {
   document.title = "Announcements | Chat Module | SoftOnCloud";
   const location = useLocation();
   const navigate = useNavigate();
+  const { canAdd, canEdit, canDelete } = useTabPermission(
+    CHAT_TAB.ANNOUNCEMENTS
+  );
   const openedFromNotifRef = useRef(null);
   const searchDebounceRef = useRef(null);
 
@@ -254,12 +261,14 @@ const Announcements = () => {
                     Browse, filter and manage organization announcements.
                   </p>
                 </div>
-                <div className="mt-3 mt-lg-0">
-                  <Button color="primary" onClick={openCreate}>
-                    <i className="ri-add-line align-bottom me-1"></i>
-                    New Announcement
-                  </Button>
-                </div>
+                {canAdd ? (
+                  <div className="mt-3 mt-lg-0">
+                    <Button color="primary" onClick={openCreate}>
+                      <i className="ri-add-line align-bottom me-1"></i>
+                      New Announcement
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </Col>
           </Row>
@@ -323,6 +332,9 @@ const Announcements = () => {
                     onEdit={openEdit}
                     onDelete={handleDeleteRequest}
                     onPinToggle={handlePinToggle}
+                    canAdd={canAdd}
+                    canEdit={canEdit}
+                    canDelete={canDelete}
                   />
                 </CardBody>
               </Card>
@@ -347,9 +359,11 @@ const Announcements = () => {
           detailsItem?.announcementId ?? detailsItem?.AnnouncementId
         }
         onClose={() => setDetailsItem(null)}
-        onEdit={openEdit}
-        onDelete={handleDeleteRequest}
+        onEdit={canEdit ? openEdit : undefined}
+        onDelete={canDelete ? handleDeleteRequest : undefined}
         onChanged={refresh}
+        canEdit={canEdit}
+        canDelete={canDelete}
       />
 
       <AnnouncementForm

@@ -99,6 +99,10 @@ import {
   getChatDateFormat,
   formatDateByPreference,
 } from "../../../helpers/softoncloud_auth_helper";
+import {
+  CHAT_TAB,
+  useTabPermission,
+} from "../../../contexts/ChatPermissionsContext";
 import "./messages.scss";
 
 const pickUserPhone = (user) => {
@@ -653,6 +657,7 @@ const applyProfileToSelfChat = (chat, profile) => {
 
 const Messages = () => {
   document.title = "Messages | Chat Module | SoftOnCloud";
+  const { canAdd, canEdit, canDelete } = useTabPermission(CHAT_TAB.MESSAGES);
 
   const [activeTab, setActiveTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -2012,6 +2017,10 @@ const Messages = () => {
 
   const sendMessage = async (e) => {
     e.preventDefault();
+    if (!canAdd) {
+      showToast("You do not have permission to send messages.");
+      return;
+    }
     const text = draft.trim();
     if (!text) return;
     const ok = await sendOutboundMessage(text, { messageTypeId: 1 });
@@ -3176,18 +3185,24 @@ const Messages = () => {
     );
   };
 
-  const moreMenuItemsLive = moreMenuItems.map((item) => {
-    if (item.id === "mute") {
-      return {
-        ...item,
-        label: activeChat?.muted || muteNotifications ? "Unmute notifications" : "Mute notifications",
-      };
-    }
-    if ((item.id === "clear" || item.id === "delete") && chatListActionBusy) {
-      return { ...item, disabled: true };
-    }
-    return item;
-  });
+  const moreMenuItemsLive = moreMenuItems
+    .filter((item) => {
+      if (item.id === "delete" || item.id === "clear") return canDelete;
+      if (item.id === "export") return canEdit || canAdd;
+      return true;
+    })
+    .map((item) => {
+      if (item.id === "mute") {
+        return {
+          ...item,
+          label: activeChat?.muted || muteNotifications ? "Unmute notifications" : "Mute notifications",
+        };
+      }
+      if ((item.id === "clear" || item.id === "delete") && chatListActionBusy) {
+        return { ...item, disabled: true };
+      }
+      return item;
+    });
 
   const activeChatImage = activeChat
     ? getCommAvatarSrc(activeChat.id, activeChat.avatarSrc)
@@ -3216,19 +3231,21 @@ const Messages = () => {
                   <div className="flex-grow-1">
                     <h5 className="mb-4">Chats</h5>
                   </div>
-                  <div className="flex-shrink-0">
-                    <UncontrolledTooltip placement="bottom" target="addcontact">
-                      New message
-                    </UncontrolledTooltip>
-                    <Button
-                      color=""
-                      id="addcontact"
-                      className="btn btn-soft-success btn-sm shadow-none"
-                      type="button"
-                    >
-                      <i className="ri-add-line align-bottom"></i>
-                    </Button>
-                  </div>
+                  {canAdd ? (
+                    <div className="flex-shrink-0">
+                      <UncontrolledTooltip placement="bottom" target="addcontact">
+                        New message
+                      </UncontrolledTooltip>
+                      <Button
+                        color=""
+                        id="addcontact"
+                        className="btn btn-soft-success btn-sm shadow-none"
+                        type="button"
+                      >
+                        <i className="ri-add-line align-bottom"></i>
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="search-box">
                   <input
@@ -3554,25 +3571,27 @@ const Messages = () => {
                             >
                               Forward
                             </Button>
-                            <Button
-                              size="sm"
-                              color="soft-danger"
-                              disabled={!selectedMessageIds.length}
-                              onClick={() => {
-                                const selected = getActiveMessages().filter(
-                                  (msg) =>
-                                    selectedMessageIds.includes(msg.id) &&
-                                    !deletedForMeIds.has(String(msg.id))
-                                );
-                                if (!selected.length) {
-                                  showToast("No messages selected");
-                                  return;
-                                }
-                                setDeleteDialog({ messages: selected });
-                              }}
-                            >
-                              Delete
-                            </Button>
+                            {canDelete ? (
+                              <Button
+                                size="sm"
+                                color="soft-danger"
+                                disabled={!selectedMessageIds.length}
+                                onClick={() => {
+                                  const selected = getActiveMessages().filter(
+                                    (msg) =>
+                                      selectedMessageIds.includes(msg.id) &&
+                                      !deletedForMeIds.has(String(msg.id))
+                                  );
+                                  if (!selected.length) {
+                                    showToast("No messages selected");
+                                    return;
+                                  }
+                                  setDeleteDialog({ messages: selected });
+                                }}
+                              >
+                                Delete
+                              </Button>
+                            ) : null}
                             <Button
                               size="sm"
                               color="light"
@@ -3879,7 +3898,7 @@ const Messages = () => {
                                               <div className="comm-msg-menu-panel">
                                                 {messageActionItems
                                                   .filter((item) => {
-                                                    if (item.id === "delete") return true;
+                                                    if (item.id === "delete") return canDelete;
                                                     if (item.id === "download") {
                                                       return (
                                                         (msg.type === "file" || msg.attachKind) &&

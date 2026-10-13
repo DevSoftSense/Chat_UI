@@ -32,6 +32,7 @@ const loginSlice = createSlice({
       state.loading = false;
       state.errorMsg = false;
       state.error = "";
+      state.isUserLogout = false;
     },
     logoutUserSuccess(state) {
       state.isUserLogout = true;
