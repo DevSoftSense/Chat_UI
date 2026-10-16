@@ -16,9 +16,9 @@ import {
 import BreadCrumb from "../../../../Components/Common/BreadCrumb";
 import {
   getChatPermissionMatrix,
-  getChatPermissionRoles,
   saveChatPermissionMatrix,
 } from "../../../../helpers/softoncloud_auth_helper";
+import { listProductRoles } from "../../../../helpers/softoncloud_master_helper";
 
 const ACTIONS = [
   { key: "view", label: "VIEW" },
@@ -66,8 +66,18 @@ const ManagePermissions = () => {
     setLoading(true);
     setError(null);
     try {
-      const list = await getChatPermissionRoles();
-      const mapped = (list || []).filter((r) => r.roleId > 0);
+      // Same SoftOnCloud roles as Manage Users (Admin + Employee), not only
+      // roles that already have rows in tab_role_permission.
+      const list = await listProductRoles(false);
+      const mapped = (list || [])
+        .map((r) => ({
+          roleId: Number(r.roleId ?? r.RoleId ?? 0),
+          roleCode: String(r.roleCode ?? r.RoleCode ?? ""),
+          roleName: String(
+            r.roleName ?? r.RoleName ?? r.roleCode ?? r.RoleCode ?? ""
+          ),
+        }))
+        .filter((r) => r.roleId > 0);
       setRoles(mapped);
       const initial =
         mapped.find((r) => /admin/i.test(r.roleCode || r.roleName)) ||
